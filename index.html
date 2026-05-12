@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0"/>
-<title>花花食界 CRM · v25</title>
+<title>花花食界 CRM · v27</title>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet"/>
 <!-- QRCode.js -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
@@ -36,21 +36,26 @@ window.supabase = (function(){
     };
 
     // ── Token 管理 ──────────────────────────────────────
+    // 使用 sessionStorage：关闭标签页后自动清除，每次必须重新登录
     const TOKEN_KEY = 'sb_' + url.split('//')[1].split('.')[0] + '_token';
     let _session = null;
     let _authListeners = [];
 
     function saveSession(s){
       _session = s;
-      try{ localStorage.setItem(TOKEN_KEY, JSON.stringify(s)); }catch(e){}
+      try{ sessionStorage.setItem(TOKEN_KEY, JSON.stringify(s)); }catch(e){}
+      // 确保不残留在 localStorage
+      try{ localStorage.removeItem(TOKEN_KEY); }catch(e){}
     }
     function clearSession(){
       _session = null;
+      try{ sessionStorage.removeItem(TOKEN_KEY); }catch(e){}
       try{ localStorage.removeItem(TOKEN_KEY); }catch(e){}
     }
     function loadSession(){
       try{
-        const s = localStorage.getItem(TOKEN_KEY);
+        // 只从 sessionStorage 读（不读 localStorage）
+        const s = sessionStorage.getItem(TOKEN_KEY);
         if(s) _session = JSON.parse(s);
       }catch(e){}
       return _session;
@@ -159,6 +164,25 @@ window.supabase = (function(){
         return {
           data:{ subscription:{ unsubscribe:()=>{ _authListeners = _authListeners.filter(f=>f!==callback); } } }
         };
+      },
+
+      // 更新当前用户信息（修改密码等）
+      async updateUser({ password, email, data: userData }){
+        if(!_session?.access_token) return { data:null, error:{ message:'未登录' }};
+        const body = {};
+        if(password) body.password = password;
+        if(email)    body.email    = email;
+        if(userData) body.data     = userData;
+        const { data, error } = await rest('PUT', '/auth/v1/user', body,
+          { 'apikey': key, 'Authorization': 'Bearer '+_session.access_token, 'Content-Type': 'application/json' }
+        );
+        if(error) return { data:null, error };
+        // 更新本地 session 中的 user 信息
+        if(_session && data) {
+          _session.user = { ..._session.user, ...data };
+          saveSession(_session);
+        }
+        return { data: { user: data }, error: null };
       }
     };
 
@@ -355,7 +379,7 @@ window.supabase = (function(){
               }
               // Handle system messages
               else if(msg.event === 'phx_reply' && msg.payload?.status === 'error'){
-                console.warn('[Realtime] join error:', msg.payload);
+                // realtime join error (suppressed in production)
               }
             }catch(err){}
           };
@@ -807,8 +831,8 @@ html,body{height:100%;overflow:hidden;font-family:'Noto Sans SC',system-ui,sans-
       <p>客户管理系统 · 内部专用</p>
     </div>
     <div class="login-field">
-      <label>登录账号</label>
-      <input type="text" id="lg-phone" placeholder="手机号 或 完整邮箱地址" maxlength="60"
+      <label>公司邮箱</label>
+      <input type="text" id="lg-phone" placeholder="请输入公司邮箱地址" maxlength="60"
         oninput="document.getElementById('lg-err').textContent=''"
         onkeydown="if(event.key==='Enter')document.getElementById('lg-pwd').focus()"/>
       <div class="login-err" id="lg-err"></div>
@@ -823,20 +847,10 @@ html,body{height:100%;overflow:hidden;font-family:'Noto Sans SC',system-ui,sans-
     <div class="login-hint">遇到问题？<span onclick="toast('请联系系统管理员重置密码','info')">联系管理员</span></div>
     <div class="login-demo">
       <strong>登录说明</strong>
-      输入手机号（自动补全邮箱后缀）或完整邮箱地址<br>
-      例：输入 <strong>13800000000</strong> 等同于<br>
-      13800000000@huahua-crm.internal<br>
-      账号由管理员在 Supabase 控制台创建
+      请输入公司完整邮箱地址<br>
+      例：<strong>jianhua.chen@foodvio.com.cn</strong>
     </div>
 
-    <!-- 调试面板 -->
-    <div id="debug-panel" style="display:none;margin-top:12px;background:#1a1a2e;border-radius:10px;padding:12px 14px;font-size:11px;font-family:monospace;color:#e2e8f0;max-height:240px;overflow-y:auto;line-height:1.8;text-align:left;border:1px solid rgba(255,255,255,.1)">
-      <div style="color:#7dd3fc;font-weight:bold;margin-bottom:6px;font-family:system-ui">🔍 调试日志</div>
-      <div id="debug-log"></div>
-    </div>
-    <button id="debug-btn" onclick="document.getElementById('debug-panel').style.display=document.getElementById('debug-panel').style.display==='none'?'block':'none'" style="display:none;margin-top:8px;width:100%;padding:7px;background:transparent;border:1px solid rgba(255,255,255,.15);border-radius:8px;color:rgba(255,255,255,.4);font-size:11px;cursor:pointer;font-family:inherit">
-      📋 显示 / 隐藏调试日志
-    </button>
   </div>
 </div>
 
@@ -886,7 +900,7 @@ html,body{height:100%;overflow:hidden;font-family:'Noto Sans SC',system-ui,sans-
         <div class="sb-stat-r"><span class="sb-stat-l">待跟进预警</span><span class="sb-stat-v" id="sb-ov" style="color:#fca5a5">0</span></div>
       </div>
     </nav>
-    <div class="sb-foot">花花食界食品科技有限公司<br>© 2025 · CRM v25.0</div>
+    <div class="sb-foot">北京花花食界食品科技有限公司<br>© 2025 · CRM v27.0</div>
   </aside>
   <div id="main">
     <div id="topbar">
@@ -919,6 +933,9 @@ html,body{height:100%;overflow:hidden;font-family:'Noto Sans SC',system-ui,sans-
           <div class="ud-item" onclick="closeDropdown();nav(document.querySelector('[data-page=ai]'),'ai')">
             🤖 AI设置
           </div>
+          <div class="ud-item" onclick="closeDropdown();openChangePasswordModal()">
+            🔑 修改密码
+          </div>
           <div class="ud-sep"></div>
           <div class="ud-item danger" onclick="doLogout()">🚪 退出登录</div>
         </div>
@@ -949,33 +966,6 @@ const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsI
 const supa = supabase.createClient(SUPA_URL, SUPA_KEY);
 
 // ══════════════════════════════════════════════════════════
-// ── 页面内调试日志（无需开发者工具）
-// ══════════════════════════════════════════════════════════
-const _dbgLines = [];
-function dbg(level, ...args){
-  const colors = {INFO:'#7dd3fc', OK:'#86efac', WARN:'#fcd34d', ERR:'#fca5a5'};
-  const ts = new Date().toLocaleTimeString('zh-CN',{hour12:false});
-  const msg = args.map(a=>{
-    if(a===null) return 'null';
-    if(a===undefined) return 'undefined';
-    if(typeof a==='object'){try{return JSON.stringify(a);}catch(e){return String(a);}}
-    return String(a);
-  }).join(' ');
-  _dbgLines.push({level, ts, msg});
-  const el = document.getElementById('debug-log');
-  const btn = document.getElementById('debug-btn');
-  if(el){
-    el.innerHTML = _dbgLines.slice(-30).map(l=>
-      `<div style="color:${colors[l.level]||'#e2e8f0'}">[${l.ts}] ${l.msg}</div>`
-    ).join('');
-    el.scrollTop = el.scrollHeight;
-  }
-  if(btn) btn.style.display = 'block';
-  if(level==='ERR') console.error('[CRM]', msg);
-  else console.log('[CRM]', level, msg);
-}
-window.onerror = function(msg, src, line){ dbg('ERR','全局错误: '+msg+' ('+src+':'+line+')'); return false; };
-window.onunhandledrejection = function(e){ dbg('ERR','Promise异常: '+(e.reason?.message||e.reason||e)); };
 
 // ══════════════════════════════════════════════════════════
 // ── 常量 & 工具函数
@@ -1226,15 +1216,6 @@ async function loadAllData(){
 // ── 认证辅助 & 调试工具
 // ══════════════════════════════════════════════════════════
 
-function toggleDebug(){
-  const panel = document.getElementById('debug-panel');
-  if(!panel) return;
-  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-}
-function clearDebug(){
-  const log = document.getElementById('debug-log');
-  if(log) log.innerHTML = '';
-}
 
 async function doLogin(){
   const input=document.getElementById('lg-phone').value.trim();
@@ -1242,8 +1223,6 @@ async function doLogin(){
   const errEl=document.getElementById('lg-err');
   const btn=document.getElementById('lg-btn');
 
-  dbg('INFO','=== 开始登录 ===');
-  dbg('INFO','输入账号: '+input);
 
   if(!input){errEl.textContent='请输入登录账号';return;}
   if(!pwd){errEl.textContent='请输入密码';return;}
@@ -1253,22 +1232,23 @@ async function doLogin(){
   const panel=document.getElementById('debug-panel');
   if(panel)panel.style.display='block';
 
-  let email;
-  if(input.includes('@')){email=input;}
-  else{email=input+'@huahua-crm.internal';}
-  dbg('INFO','实际邮箱: '+email);
+  // 直接使用输入的邮箱地址（必须包含@）
+  if(!input.includes('@')){
+    btn.disabled=false;btn.textContent='登 录';
+    errEl.textContent='请输入完整的公司邮箱地址（如 jianhua.chen@foodvio.com.cn）';
+    return;
+  }
+  const email=input.toLowerCase().trim();
 
   try{
-    dbg('INFO','正在连接 Supabase...');
     const{data,error}=await supa.auth.signInWithPassword({email,password:pwd});
 
     if(error){
-      dbg('ERR','认证失败: '+error.message+(error.status?' ['+error.status+']':''));
       btn.disabled=false;btn.textContent='登 录';
       if(error.message.toLowerCase().includes('invalid')||
          error.message.toLowerCase().includes('credentials')||
          error.status===400){
-        errEl.textContent='账号或密码错误，请重试';
+        errEl.textContent='邮箱或密码错误，请重试';
       }else if(error.message.includes('confirmed')){
         errEl.textContent='账号待激活，请联系管理员';
       }else if(error.message.includes('fetch')||error.message.includes('network')||error.message.includes('Failed')){
@@ -1279,33 +1259,26 @@ async function doLogin(){
       return;
     }
 
-    dbg('OK','认证成功! userId='+data.user.id);
-    dbg('INFO','获取用户 profile...');
 
     const{data:profile,error:pErr}=await supa.from('profiles')
       .select('*').eq('id',data.user.id).single();
 
     if(pErr||!profile){
       const msg=pErr?.message||'未找到 profile 记录';
-      dbg('ERR','获取 profile 失败: '+msg);
-      dbg('WARN','请确认 profiles 表有对应记录，并已执行建表SQL');
       btn.disabled=false;btn.textContent='登 录';
       errEl.textContent='获取用户信息失败：'+msg;
       await supa.auth.signOut();return;
     }
 
     const p=snakeToCamel(profile);
-    dbg('OK','profile OK: name='+p.name+' role='+p.role+' isActive='+p.isActive);
 
     if(p.isActive===false){
-      dbg('WARN','账号已禁用');
       btn.disabled=false;btn.textContent='登 录';
       errEl.textContent='账号已被禁用，请联系管理员';
       await supa.auth.signOut();return;
     }
 
     currentUser={id:data.user.id,email:data.user.email,...p};
-    dbg('OK','=== 登录成功 === 角色:'+currentUser.role);
 
     document.getElementById('login-page').classList.add('hidden');
     await loadAllData();
@@ -1315,7 +1288,6 @@ async function doLogin(){
     subscribeRealtime();
 
   }catch(e){
-    dbg('ERR','异常: '+(e.message||String(e)));
     btn.disabled=false;btn.textContent='登 录';
     errEl.textContent='登录异常：'+(e.message||'未知错误')+'（见调试日志）';
   }
@@ -1334,6 +1306,109 @@ async function doLogout(){
     document.getElementById('lg-err').textContent='';
     closeModal();
   });
+}
+
+// ── 修改密码 ─────────────────────────────────────────────
+function openChangePasswordModal(){
+  openModal('🔑 修改密码',`
+  <div class="form-grid">
+    <div class="fg full">
+      <label>当前密码<span class="req">*</span></label>
+      <input type="password" id="cp-old" placeholder="请输入当前密码" autocomplete="current-password">
+      <span class="err-m" id="e-cp-old"></span>
+    </div>
+    <div class="fg full">
+      <label>新密码<span class="req">*</span></label>
+      <input type="password" id="cp-new1" placeholder="请输入新密码（至少6位）"
+        autocomplete="new-password" oninput="checkPwdMatch()">
+      <span class="err-m" id="e-cp-new1"></span>
+    </div>
+    <div class="fg full">
+      <label>确认新密码<span class="req">*</span></label>
+      <input type="password" id="cp-new2" placeholder="再次输入新密码"
+        autocomplete="new-password" oninput="checkPwdMatch()">
+      <span class="err-m" id="e-cp-new2"></span>
+    </div>
+    <div id="cp-match-hint" style="display:none;grid-column:1/-1;padding:7px 10px;border-radius:7px;font-size:12px"></div>
+    <div style="grid-column:1/-1;padding:9px 12px;background:#fffbeb;border-radius:8px;font-size:12px;color:#92400e;border:1px solid #fcd34d">
+      ⚠️ 密码修改后需重新登录
+    </div>
+  </div>`,
+  `<button class="btn" onclick="closeModal()">取消</button>
+   <button class="btn btn-p" id="cp-submit-btn" onclick="submitChangePassword()">确认修改</button>`
+  );
+}
+
+// 实时检查两次密码是否一致
+function checkPwdMatch(){
+  const p1=document.getElementById('cp-new1')?.value||'';
+  const p2=document.getElementById('cp-new2')?.value||'';
+  const hint=document.getElementById('cp-match-hint');
+  const btn=document.getElementById('cp-submit-btn');
+  if(!p2){if(hint)hint.style.display='none';return;}
+  if(p1===p2){
+    if(hint){hint.style.display='block';hint.style.background='#f0fdf4';hint.style.color='#166534';hint.style.border='1px solid #d1fae5';hint.textContent='✓ 两次密码一致';}
+    if(btn)btn.disabled=false;
+  }else{
+    if(hint){hint.style.display='block';hint.style.background='#fef2f2';hint.style.color='#b91c1c';hint.style.border='1px solid #fecaca';hint.textContent='✕ 两次密码不一致';}
+    if(btn)btn.disabled=true;
+  }
+}
+
+async function submitChangePassword(){
+  const oldPwd=document.getElementById('cp-old')?.value||'';
+  const newPwd1=document.getElementById('cp-new1')?.value||'';
+  const newPwd2=document.getElementById('cp-new2')?.value||'';
+
+  // 清空错误提示
+  ['e-cp-old','e-cp-new1','e-cp-new2'].forEach(id=>{
+    const el=document.getElementById(id);if(el)el.textContent='';
+  });
+
+  // 前端验证
+  let ok=true;
+  if(!oldPwd){document.getElementById('e-cp-old').textContent='请输入当前密码';ok=false;}
+  if(!newPwd1||newPwd1.length<6){document.getElementById('e-cp-new1').textContent='新密码至少6位';ok=false;}
+  if(!newPwd2){document.getElementById('e-cp-new2').textContent='请再次输入新密码';ok=false;}
+  if(newPwd1&&newPwd2&&newPwd1!==newPwd2){document.getElementById('e-cp-new2').textContent='两次密码不一致';ok=false;}
+  if(newPwd1&&oldPwd&&newPwd1===oldPwd){document.getElementById('e-cp-new1').textContent='新密码不能与旧密码相同';ok=false;}
+  if(!ok)return;
+
+  const btn=document.getElementById('cp-submit-btn');
+  if(btn){btn.disabled=true;btn.textContent='验证中...';}
+
+  // 第一步：用旧密码重新验证身份（防止他人趁机改密码）
+  const email=currentUser?.email||'';
+  const{data:verifyData,error:verifyErr}=await supa.auth.signInWithPassword({email,password:oldPwd});
+  if(verifyErr){
+    if(btn){btn.disabled=false;btn.textContent='确认修改';}
+    document.getElementById('e-cp-old').textContent='当前密码错误，请重新输入';
+    return;
+  }
+
+  // 第二步：更新密码
+  if(btn)btn.textContent='修改中...';
+  const{error:updateErr}=await supa.auth.updateUser({password:newPwd1});
+  if(updateErr){
+    if(btn){btn.disabled=false;btn.textContent='确认修改';}
+    document.getElementById('e-cp-new1').textContent='密码修改失败：'+updateErr.message;
+    return;
+  }
+
+  // 成功：退出登录，要求用新密码重新登录
+  closeModal();
+  toast('密码修改成功！请用新密码重新登录');
+  setTimeout(async()=>{
+    unsubscribeRealtime();
+    await supa.auth.signOut();
+    currentUser=null;
+    DB={customers:[],followups:[],profiles:[]};
+    try{sessionStorage.removeItem(CACHE_KEY);}catch(e){}
+    document.getElementById('login-page').classList.remove('hidden');
+    document.getElementById('lg-phone').value='';
+    document.getElementById('lg-pwd').value='';
+    document.getElementById('lg-err').textContent='';
+  },1500);
 }
 
 async function restoreSession(){
@@ -1907,71 +1982,90 @@ async function confirmDelUser(id){
 // ── AI 引擎：多模型统一调用层
 // ══════════════════════════════════════════════════════════
 
-// 模型元数据
-const AI_MODELS={
-  claude:  {name:'Claude',    vendor:'Anthropic',color:'#7c3aed',letter:'C',
-             models:['claude-sonnet-4-5','claude-opus-4-5','claude-haiku-4-5'],
-             placeholder:'sk-ant-api03-...'},
-  gemini:  {name:'Gemini',    vendor:'Google',   color:'#1d4ed8',letter:'G',
-             models:['gemini-2.0-flash','gemini-1.5-pro'],
-             placeholder:'AIza...'},
-  deepseek:{name:'DeepSeek',  vendor:'DeepSeek', color:'#0f172a',letter:'D',
-             models:['deepseek-chat','deepseek-reasoner'],
-             placeholder:'sk-...'},
-  doubao:  {name:'豆包',      vendor:'字节跳动', color:'#0369a1',letter:'豆',
-             models:[],manualModel:true,
-             placeholder:'ARK API Key',
-             modelPlaceholder:'endpoint-id（火山引擎控制台获取）'},
-  qwen:    {name:'通义千问',   vendor:'阿里云',   color:'#b45309',letter:'千',
-             models:['qwen-turbo','qwen-plus','qwen-max'],
-             placeholder:'sk-...'},
-  yuanbao: {name:'元宝',      vendor:'腾讯',     color:'#9f1239',letter:'元',
-             soon:true},
+// ── AI 模型配置 ─────────────────────────────────────────
+// 内置模型（只保留 DeepSeek 为默认）
+const AI_MODELS_BUILTIN={
+  deepseek:{
+    name:'DeepSeek', vendor:'DeepSeek', color:'#0f172a', letter:'D',
+    models:['deepseek-chat','deepseek-reasoner'],
+    placeholder:'sk-...',
+    endpoint:'https://api.deepseek.com/v1/chat/completions',
+    type:'openai_compat',
+    howto:'访问 platform.deepseek.com → 注册 → API Keys → 创建Key（支付宝充值，10元可用很久）'
+  },
 };
 
-// 加载/保存 AI 配置
+// 加载完整 AI 配置（内置 + 用户自定义）
 function loadAIConfig(){
   try{
     const raw=localStorage.getItem('huahua_ai_v25_config');
-    if(raw)return JSON.parse(raw);
+    if(raw){
+      const cfg=JSON.parse(raw);
+      // 兼容旧版多模型配置，重置为只含 deepseek
+      if(!cfg.models?.deepseek){
+        cfg.models={deepseek:{key:localStorage.getItem('huahua_ai_key')||'',model:'deepseek-chat'}};
+        cfg.activeModel='deepseek';
+      }
+      // 确保 customModels 存在
+      if(!cfg.customModels) cfg.customModels=[];
+      return cfg;
+    }
   }catch(e){}
-  return{activeModel:'claude',models:{
-    claude:  {key:localStorage.getItem('huahua_ai_key')||'',model:'claude-sonnet-4-5'},
-    gemini:  {key:'',model:'gemini-2.0-flash'},
-    deepseek:{key:'',model:'deepseek-chat'},
-    doubao:  {key:'',model:''},
-    qwen:    {key:'',model:'qwen-turbo'},
-  }};
+  return{
+    activeModel:'deepseek',
+    models:{ deepseek:{key:localStorage.getItem('huahua_ai_key')||'',model:'deepseek-chat'} },
+    customModels:[], // [{id,name,vendor,endpoint,key,model,type}]
+  };
 }
 function saveAIConfig(cfg){
   try{localStorage.setItem('huahua_ai_v25_config',JSON.stringify(cfg));}catch(e){}
 }
 function getActiveAIModel(){
+  return loadAIConfig().activeModel||'deepseek';
+}
+
+// 获取所有可用模型（内置 + 自定义）
+function getAllModels(){
   const cfg=loadAIConfig();
-  return cfg.activeModel||'claude';
+  const all={...AI_MODELS_BUILTIN};
+  (cfg.customModels||[]).forEach(m=>{
+    all[m.id]={
+      name:m.name, vendor:m.vendor||'自定义', color:m.color||'#6366f1',
+      letter:m.name?.[0]||'?', models:m.model?[m.model]:[],
+      placeholder:'API Key', endpoint:m.endpoint,
+      type:m.type||'openai_compat', custom:true,
+      howto:m.howto||'请参考该服务商的API文档获取Key'
+    };
+  });
+  return all;
 }
 
 // ── 统一 AI 调用入口 ─────────────────────────────────────
 async function callAI({system,prompt,maxTokens=800,stream=false,onChunk=null}){
   const cfg=loadAIConfig();
-  const modelId=cfg.activeModel||'claude';
+  const modelId=cfg.activeModel||'deepseek';
   const modelCfg=cfg.models[modelId]||{};
-  const meta=AI_MODELS[modelId];
+  const allModels=getAllModels();
+  const meta=allModels[modelId];
 
   if(!modelCfg.key?.trim()){
-    toast('请先在「AI设置」页面配置 '+meta?.name+' API Key','err');
+    toast('请先在「AI设置」页面配置 '+(meta?.name||modelId)+' API Key','err');
     nav(document.querySelector('[data-page=ai]'),'ai');
     return null;
   }
 
   try{
-    switch(modelId){
-      case 'claude':   return await _callClaude(system,prompt,maxTokens,modelCfg,stream,onChunk);
-      case 'gemini':   return await _callGemini(system,prompt,maxTokens,modelCfg);
-      case 'deepseek': return await _callOpenAICompat('https://api.deepseek.com/v1/chat/completions',system,prompt,maxTokens,modelCfg);
-      case 'doubao':   return await _callOpenAICompat('https://ark.cn-beijing.volces.com/api/v3/chat/completions',system,prompt,maxTokens,modelCfg);
-      case 'qwen':     return await _callOpenAICompat('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',system,prompt,maxTokens,modelCfg);
-      default: return null;
+    // 判断调用类型
+    const mtype=meta?.type||'openai_compat';
+    if(mtype==='claude'){
+      return await _callClaude(system,prompt,maxTokens,modelCfg,stream,onChunk);
+    }else if(mtype==='gemini'){
+      return await _callGemini(system,prompt,maxTokens,modelCfg);
+    }else{
+      // openai_compat：DeepSeek、豆包、千问及所有自定义模型
+      const endpoint=meta?.endpoint||modelCfg.endpoint||'';
+      if(!endpoint){ toast('该模型未配置API端点','err'); return null; }
+      return await _callOpenAICompat(endpoint,system,prompt,maxTokens,modelCfg,stream,onChunk);
     }
   }catch(e){
     const msg=e.message||String(e);
@@ -2018,24 +2112,40 @@ async function _callGemini(system,prompt,maxTokens,cfg){
   return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim()||null;
 }
 
-async function _callOpenAICompat(endpoint,system,prompt,maxTokens,cfg){
+async function _callOpenAICompat(endpoint,system,prompt,maxTokens,cfg,stream,onChunk){
   const messages=[];
   if(system)messages.push({role:'system',content:system});
   messages.push({role:'user',content:prompt});
-  const res=await fetch(endpoint,{method:'POST',
+  const res=await fetch(endpoint,{
+    method:'POST',
     headers:{'Content-Type':'application/json','Authorization':'Bearer '+cfg.key},
-    body:JSON.stringify({model:cfg.model,messages,max_tokens:maxTokens})});
+    body:JSON.stringify({model:cfg.model||'',messages,max_tokens:maxTokens,stream:!!stream})
+  });
   if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e?.error?.message||'HTTP '+res.status);}
+  if(stream&&onChunk){
+    const reader=res.body.getReader(),dec=new TextDecoder();let full='';
+    while(true){
+      const{done,value}=await reader.read();if(done)break;
+      for(const line of dec.decode(value).split('\n')){
+        if(!line.startsWith('data: '))continue;
+        const d=line.slice(6);if(d==='[DONE]')break;
+        try{const j=JSON.parse(d);const t=j.choices?.[0]?.delta?.content||'';if(t){full+=t;onChunk(t,full);}}catch(e){}
+      }
+    }
+    return full;
+  }
   const data=await res.json();
   return data.choices?.[0]?.message?.content?.trim()||null;
 }
 
-// ── AI连接测试 ───────────────────────────────────────────
 async function testAIConnection(modelId){
   const cfg=loadAIConfig();
   const modelCfg=cfg.models[modelId]||{};
   const resultEl=document.getElementById(`ai-test-${modelId}`);
-  if(!modelCfg.key?.trim()){if(resultEl){resultEl.className='ai-test-result err';resultEl.style.display='block';resultEl.textContent='✕ 请先填写 API Key';}return;}
+  if(!modelCfg.key?.trim()){
+    if(resultEl){resultEl.className='ai-test-result err';resultEl.style.display='block';resultEl.textContent='✕ 请先填写 API Key';}
+    return;
+  }
   if(resultEl){resultEl.className='ai-test-result';resultEl.style.display='block';resultEl.textContent='⏳ 测试中...';}
   const t0=Date.now();
   const savedActive=cfg.activeModel;
@@ -2045,40 +2155,45 @@ async function testAIConnection(modelId){
   const ms=Date.now()-t0;
   if(resultEl){
     if(result){resultEl.className='ai-test-result ok';resultEl.textContent=`✓ 连接正常，响应时间 ${ms}ms`;}
-    else{resultEl.className='ai-test-result err';resultEl.textContent='✕ 连接失败，请检查 API Key';}
+    else{resultEl.className='ai-test-result err';resultEl.textContent='✕ 连接失败，请检查 API Key 和端点地址';}
   }
 }
 
 // ── AI设置页面渲染 ────────────────────────────────────────
 function renderAISettings(){
   const cfg=loadAIConfig();
-  const activeModel=cfg.activeModel||'claude';
+  const activeModel=cfg.activeModel||'deepseek';
+  const allModels=getAllModels();
 
-  const modelCards=Object.entries(AI_MODELS).map(([id,meta])=>{
+  // 模型卡片列表（内置 DeepSeek + 用户自定义）
+  const modelCards=Object.entries(allModels).map(([id,meta])=>{
     const mcfg=cfg.models[id]||{};
     const hasKey=!!mcfg.key?.trim();
     const isActive=id===activeModel;
-    const isSoon=!!meta.soon;
-    let statusHtml='';
-    if(isSoon)statusHtml=`<div class="ai-model-status soon">即将支持</div>`;
-    else if(hasKey)statusHtml=`<div class="ai-model-status ok">✓ 已配置</div>`;
-    else statusHtml=`<div class="ai-model-status no">未配置</div>`;
-    return `<div class="ai-model-card${isActive?' active':''}${isSoon?' disabled':''}"
-      onclick="${isSoon?'':'selectAIModel(\''+id+'\')'}">
+    const statusHtml=hasKey
+      ?`<div class="ai-model-status ok">✓ 已配置</div>`
+      :`<div class="ai-model-status no">未配置</div>`;
+    const deleteBtn=meta.custom
+      ?`<div style="position:absolute;top:6px;right:6px" onclick="event.stopPropagation();deleteCustomModel('${id}')"><span style="font-size:16px;color:#9ca3af;cursor:pointer" title="删除此模型">×</span></div>`
+      :'';
+    return `<div class="ai-model-card${isActive?' active':''}" onclick="selectAIModel('${id}')" style="position:relative">
+      ${deleteBtn}
       <div class="ai-model-avatar" style="background:${meta.color}">${meta.letter}</div>
       <div class="ai-model-name">${meta.name}</div>
       <div class="ai-model-vendor">${meta.vendor}</div>
       ${statusHtml}
+      ${meta.custom?'<div style="font-size:10px;color:#9ca3af;margin-top:2px">自定义</div>':''}
     </div>`;
   }).join('');
 
-  // 当前激活模型的配置表单
-  const meta=AI_MODELS[activeModel];
+  // 当前激活模型配置表单
+  const meta=allModels[activeModel]||AI_MODELS_BUILTIN.deepseek;
   const mcfg=cfg.models[activeModel]||{key:'',model:''};
-  const modelOptions=meta.models?.map(m=>`<option value="${m}" ${mcfg.model===m?'selected':''}>${m}</option>`).join('')||'';
+  const modelOptions=(meta.models||[]).map(m=>
+    `<option value="${m}" ${mcfg.model===m?'selected':''}>${m}</option>`
+  ).join('');
 
-  const cfgForm=meta.soon?`<div style="padding:20px;text-align:center;color:var(--ms)">🚧 该模型即将支持，敬请期待</div>`:`
-  <div class="ai-cfg-box">
+  const cfgForm=`<div class="ai-cfg-box">
     <div class="ai-cfg-title">
       <div style="width:28px;height:28px;border-radius:50%;background:${meta.color};display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:700">${meta.letter}</div>
       ${meta.name} 配置
@@ -2086,31 +2201,28 @@ function renderAISettings(){
     <div class="form-grid">
       <div class="fg full">
         <label>API Key<span class="req">*</span></label>
-        <input type="password" id="ai-key-${activeModel}" value="${h(mcfg.key||'')}"
+        <input type="password" id="ai-key-${activeModel}" value="${mcfg.key||''}"
           placeholder="${meta.placeholder||'请输入 API Key'}"
           style="font-family:monospace;font-size:12px"
           onchange="saveAIModelConfig('${activeModel}')">
       </div>
       <div class="fg">
         <label>模型版本</label>
-        ${meta.manualModel?
-          `<input id="ai-model-${activeModel}" value="${h(mcfg.model||'')}" placeholder="${meta.modelPlaceholder||'输入模型名称'}" onchange="saveAIModelConfig('${activeModel}')">`
-          :`<select id="ai-model-${activeModel}" onchange="saveAIModelConfig('${activeModel}')">${modelOptions}</select>`
+        ${meta.models?.length
+          ?`<select id="ai-model-${activeModel}" onchange="saveAIModelConfig('${activeModel}')">${modelOptions}</select>`
+          :`<input id="ai-model-${activeModel}" value="${mcfg.model||''}" placeholder="输入模型名称" onchange="saveAIModelConfig('${activeModel}')">`
         }
       </div>
+      ${meta.endpoint?`<div class="fg"><label>API端点</label><input value="${meta.endpoint}" readonly style="font-size:11px;color:var(--ms);background:var(--sn)"></div>`:''}
       <div class="fg">
         <button class="btn" onclick="testAIConnection('${activeModel}')" style="margin-top:20px">🔌 测试连接</button>
         <div id="ai-test-${activeModel}" class="ai-test-result" style="display:none"></div>
       </div>
     </div>
     <div style="margin-top:12px;padding:10px;background:#f5f3ff;border-radius:8px;font-size:12px;color:#5b21b6;line-height:1.8">
-      💡 如何获取 ${meta.name} API Key：
-      ${activeModel==='claude'?'访问 <strong>console.anthropic.com</strong> → API Keys → Create Key':
-        activeModel==='gemini'?'访问 <strong>aistudio.google.com</strong> → Get API Key':
-        activeModel==='deepseek'?'访问 <strong>platform.deepseek.com</strong> → API Keys':
-        activeModel==='doubao'?'访问 <strong>ark.volcengine.com</strong> → API密钥，模型ID在"推理接入点"获取':
-        activeModel==='qwen'?'访问 <strong>dashscope.aliyuncs.com</strong> → API Key管理':''}
-      <br><span style="color:var(--ms)">⚠ API Key 仅保存在您本机，不会上传服务器</span>
+      💡 <strong>如何获取 ${meta.name} API Key：</strong><br>
+      ${meta.howto||'请参考该服务商官方文档'}
+      <br><span style="color:var(--ms)">⚠ API Key 仅保存在您本机浏览器，不会上传服务器</span>
     </div>
   </div>`;
 
@@ -2118,7 +2230,10 @@ function renderAISettings(){
   <div style="font-size:16px;font-weight:700;color:var(--ink);margin-bottom:4px">🤖 AI模型设置</div>
   <div style="font-size:13px;color:var(--ms);margin-bottom:18px">选择并配置您的AI模型，配置后可在跟进记录、周报生成等功能中使用</div>
 
-  <div style="font-size:12px;font-weight:600;color:var(--sl);margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px">选择模型</div>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+    <div style="font-size:12px;font-weight:600;color:var(--sl);text-transform:uppercase;letter-spacing:.5px">已有模型</div>
+    <button class="btn btn-p btn-sm" onclick="openAddModelModal()">+ 添加模型</button>
+  </div>
   <div class="ai-model-grid">${modelCards}</div>
 
   <div style="font-size:12px;font-weight:600;color:var(--sl);margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px">配置 ${meta.name}</div>
@@ -2135,55 +2250,36 @@ function renderAISettings(){
       <div class="form-grid">
         <div class="fg full">
           <label>Web服务 Key</label>
-          <input type="text" id="ai-amap-key" value="${h(loadAIConfig().amapKey||'')}"
-            placeholder="请输入高德地图 Web服务 Key"
+          <input type="text" id="ai-amap-key" value="${loadAIConfig().amapKey||''}"
+            placeholder="请输入高德地图 Web服务 Key（选填）"
             style="font-family:monospace;font-size:12px"
             onchange="saveAmapKey(this.value)">
-          <div style="margin-top:6px;font-size:11px;color:var(--ms)">
-            用于「位置打卡」功能将 GPS 坐标转换为详细地址（如：北京市朝阳区xxx路）。
-            不填写也能正常打卡，只是显示经纬度坐标而非地址。
-          </div>
+          <div style="margin-top:6px;font-size:11px;color:var(--ms)">用于位置打卡显示详细地址。访问 lbs.amap.com 免费申请，每日5000次免费额度。</div>
         </div>
-      </div>
-      <div style="margin-top:10px;padding:9px 12px;background:#f5f3ff;border-radius:8px;font-size:12px;color:#5b21b6;line-height:1.8">
-        💡 <strong>如何免费申请：</strong><br>
-        ① 访问 <strong>lbs.amap.com</strong> → 注册开发者账号（免费）<br>
-        ② 进入控制台 → 应用管理 → 创建新应用<br>
-        ③ 添加 Key → 服务平台选「<strong>Web服务</strong>」→ 提交<br>
-        ④ 复制生成的 Key 粘贴到上方输入框<br>
-        <span style="color:var(--ms)">免费额度：每日5000次，个人/小团队完全够用</span>
       </div>
     </div>
   </div>
 
   <div style="margin-top:16px;padding:12px 14px;background:#f0fdf4;border-radius:9px;border:1px solid #d1fae5;font-size:12px;color:#166534;line-height:1.9">
     🎯 <strong>AI功能使用指南：</strong><br>
-    · <strong>跟进记录</strong> → 「🤖 AI总结」按钮：总结跟进内容要点<br>
-    · <strong>跟进记录</strong> → 「🔍 AI分析需求」按钮：分析客户需求<br>
-    · <strong>客户列表</strong> → 「💡 AI建议」按钮：生成跟进策略建议<br>
+    · <strong>跟进记录</strong> → 「🤖 AI总结」：总结跟进内容要点<br>
+    · <strong>跟进记录</strong> → 「🔍 AI分析需求」：分析客户需求和应对策略<br>
+    · <strong>客户列表</strong> → 「💡 AI建议」：生成跟进策略建议<br>
     · <strong>仪表盘</strong> → 「🤖 AI洞察」：分析销售数据给出管理建议<br>
-    · <strong>周报生成</strong> → 「🤖 AI直接生成」/ 「🤖 AI精炼」<br>
-    · <strong>跟进记录</strong> → 「📍 记录位置」：拜访时打卡当前位置（需配置高德Key显示详细地址）
+    · <strong>周报生成</strong> → 「🤖 AI直接生成」/ 「🤖 AI精炼」
   </div>
 </div>`;
 }
 
-// 保存高德地图 Key
-function saveAmapKey(val){
-  const cfg=loadAIConfig();
-  cfg.amapKey=val.trim();
-  saveAIConfig(cfg);
-  toast(val.trim()?'高德地图 Key 已保存 ✓':'高德地图 Key 已清除');
-}
 
 // 切换激活模型
 function selectAIModel(modelId){
-  if(AI_MODELS[modelId]?.soon)return;
   const cfg=loadAIConfig();
   cfg.activeModel=modelId;
   saveAIConfig(cfg);
   renderPage('ai');
-  toast(`已切换至 ${AI_MODELS[modelId]?.name}`);
+  const allModels=getAllModels();
+  toast(`已切换至 ${allModels[modelId]?.name||modelId}`);
 }
 
 // 保存模型配置
@@ -2195,11 +2291,92 @@ function saveAIModelConfig(modelId){
   if(keyEl)cfg.models[modelId].key=keyEl.value.trim();
   if(modelEl)cfg.models[modelId].model=modelEl.value;
   saveAIConfig(cfg);
-  // 向后兼容：同步保存 claude key 到旧 key
-  if(modelId==='claude'&&cfg.models.claude.key){
+  // 向后兼容旧 claude key
+  if(modelId==='claude'&&cfg.models.claude?.key){
     try{localStorage.setItem('huahua_ai_key',cfg.models.claude.key);}catch(e){}
   }
   toast('配置已保存');
+}
+
+// 打开"添加自定义模型"弹窗
+function openAddModelModal(){
+  openModal('➕ 添加自定义模型',`
+  <div class="form-grid">
+    <div class="f-sect">模型基本信息</div>
+    <div class="fg"><label>模型名称<span class="req">*</span></label>
+      <input id="cm-name" placeholder="如：Claude / Gemini / 通义千问">
+      <span class="err-m" id="e-cm-name"></span>
+    </div>
+    <div class="fg"><label>服务商</label>
+      <input id="cm-vendor" placeholder="如：Anthropic / Google / 阿里云">
+    </div>
+    <div class="fg full"><label>API 端点地址<span class="req">*</span></label>
+      <input id="cm-endpoint" placeholder="如：https://api.anthropic.com/v1/messages">
+      <span class="err-m" id="e-cm-endpoint"></span>
+      <div style="font-size:11px;color:var(--ms);margin-top:4px">OpenAI兼容格式（/chat/completions）自动支持；Claude格式需选对应协议</div>
+    </div>
+    <div class="fg"><label>调用协议</label>
+      <select id="cm-type">
+        <option value="openai_compat">OpenAI兼容（DeepSeek/千问/豆包等）</option>
+        <option value="claude">Claude（Anthropic）</option>
+        <option value="gemini">Gemini（Google）</option>
+      </select>
+    </div>
+    <div class="fg"><label>默认模型版本</label>
+      <input id="cm-model" placeholder="如：gpt-4o / claude-opus-4-5 / qwen-max">
+    </div>
+    <div class="fg full"><label>API Key<span class="req">*</span></label>
+      <input type="password" id="cm-key" placeholder="粘贴您的 API Key" style="font-family:monospace;font-size:12px">
+      <span class="err-m" id="e-cm-key"></span>
+    </div>
+    <div class="fg full"><label>获取Key说明（可选）</label>
+      <input id="cm-howto" placeholder="如：访问 platform.xxx.com → 注册 → API Keys">
+    </div>
+  </div>`,
+  `<button class="btn" onclick="closeModal()">取消</button>
+   <button class="btn btn-p" onclick="saveCustomModel()">添加模型</button>`);
+}
+
+// 保存自定义模型
+function saveCustomModel(){
+  const name=(document.getElementById('cm-name')?.value||'').trim();
+  const endpoint=(document.getElementById('cm-endpoint')?.value||'').trim();
+  const key=(document.getElementById('cm-key')?.value||'').trim();
+  let ok=true;
+  if(!name){document.getElementById('e-cm-name').textContent='必填';ok=false;}
+  if(!endpoint){document.getElementById('e-cm-endpoint').textContent='必填';ok=false;}
+  if(!key){document.getElementById('e-cm-key').textContent='必填';ok=false;}
+  if(!ok)return;
+  const id='custom_'+Date.now().toString(36);
+  const cfg=loadAIConfig();
+  if(!cfg.customModels)cfg.customModels=[];
+  cfg.customModels.push({
+    id, name, vendor:document.getElementById('cm-vendor')?.value||'自定义',
+    endpoint, type:document.getElementById('cm-type')?.value||'openai_compat',
+    model:document.getElementById('cm-model')?.value||'',
+    howto:document.getElementById('cm-howto')?.value||'',
+    color:'#'+Math.floor(Math.random()*0x444444+0x333333).toString(16),
+  });
+  cfg.models[id]={key, model:document.getElementById('cm-model')?.value||''};
+  cfg.activeModel=id;
+  saveAIConfig(cfg);
+  closeModal();
+  renderPage('ai');
+  toast(`✅ "${name}" 已添加并设为当前模型`);
+}
+
+// 删除自定义模型
+function deleteCustomModel(id){
+  openConfirm('确定删除这个自定义模型吗？',()=>{
+    const cfg=loadAIConfig();
+    cfg.customModels=(cfg.customModels||[]).filter(m=>m.id!==id);
+    delete cfg.models[id];
+    if(cfg.activeModel===id)cfg.activeModel='deepseek';
+    saveAIConfig(cfg);
+    closeModal();
+    renderPage('ai');
+    toast('模型已删除','err');
+  });
 }
 
 // ── AI 客户跟进建议 ──────────────────────────────────────
@@ -2465,7 +2642,7 @@ let repState={
 function renderReport(){
   const wr=weekRange(),lw=lastWeekRange();
   const users=getUsers().filter(u=>u.isActive);
-  try{repState.apiKey='';}catch(e){}
+  // AI Key 统一由 AI设置页面管理
 
   // 获取当前查询范围名称（用于文件命名）
   const scopeName=()=>{
@@ -2675,7 +2852,7 @@ async function generateReport(){
   成果：${f.outcome}${f.nextAction?'\n  下一步：'+f.nextAction:''}${f.nextActionProgress?'\n  行动进展：'+f.nextActionProgress:''}`;
     }).join('\n---\n');
 
-    const prompt=`你是花花食界食品科技有限公司的专业销售数据分析师。请根据以下CRM数据，生成一份结构完整、语言专业的中文客户跟进周报。
+    const prompt=`你是北京花花食界食品科技有限公司的专业销售数据分析师。请根据以下CRM数据，生成一份结构完整、语言专业的中文客户跟进周报。
 
 【数据范围】${r.from} 至 ${r.to}，汇报范围：${scopeName}
 【跟进概况】本期共${fFU.length}次跟进，覆盖${totalCusts}家客户，${Object.keys(byMgr).length}位经理参与
@@ -2697,7 +2874,7 @@ ${detailRecords||'暂无跟进记录'}
 六、下周跟进计划`;
     repState.streaming=true;repState.loading=false;repState.source='ai';refreshReport();
     const result=await callAI({
-      system:'你是花花食界食品科技有限公司的专业销售数据分析师。请根据以下CRM数据生成结构完整、语言专业的中文客户跟进周报。',
+      system:'你是北京花花食界食品科技有限公司的专业销售数据分析师。请根据以下CRM数据生成结构完整、语言专业的中文客户跟进周报。',
       prompt,
       maxTokens:1500,
       stream:true,
@@ -2915,7 +3092,7 @@ function doExportDoc(fileBase){
 <body>
 ${htmlBody}
 <p style="margin-top:24pt;font-size:10pt;color:#6b7280;border-top:1pt solid #e5e7eb;padding-top:8pt">
-  花花食界食品科技有限公司 · CRM系统导出 · ${new Date().toLocaleString('zh-CN')}
+  北京花花食界食品科技有限公司 · CRM系统导出 · ${new Date().toLocaleString('zh-CN')}
 </p>
 </body></html>`.trim();
 
@@ -3895,7 +4072,7 @@ async function confirmImport(){
       return row;
     });
     const{error}=await supa.from('customers').insert(batch);
-    if(error){console.error('import batch error:',error);fail+=batch.length;}
+    if(error){fail+=batch.length;}
     else{success+=batch.length;}
   }
   await loadCustomers();
@@ -4156,20 +4333,17 @@ function openFUForm(id,defaultCid){
       <span class="err-m" id="e-cu"></span>
       <div id="ff-status-warn" style="display:none;margin-top:6px;padding:8px 11px;background:#fef2f2;border:1px solid #fecaca;border-radius:7px;font-size:12px;color:#b91c1c;line-height:1.6"></div>
     </div>
-    <div class="fg"><label>跟进方式</label><select id="ff-ty">${sel('type','电话',['电话','拜访','微信','邮件','视频会议'])}</select></div>
+    <div class="fg"><label>跟进方式</label><select id="ff-ty" onchange="const lb=document.getElementById('ff-loc-btn');if(lb)lb.style.display=this.value==='拜访'?'inline-flex':'none'">${sel('type','电话',['电话','拜访','微信','邮件','视频会议'])}</select></div>
 
-    <!-- 跟进内容 + AI总结按钮 -->
+    <!-- 跟进内容 + AI总结 + 位置打卡 -->
     <div class="fg full">
-      <label>跟进内容<span class="req">*</span>
-        ${`<button type="button" id="ai-sum-btn" class="btn btn-ai btn-sm ai-btn-trigger" onclick="aiSummarizeFU()">🤖 AI总结</button>`}
-      </label>
+      <label>跟进内容<span class="req">*</span></label>
       <div class="ai-content-wrap">
         <textarea id="ff-co" class="fu-content-area">${v('content')}</textarea>
       </div>
       <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
         <button type="button" id="ai-sum-btn" class="btn btn-ai btn-sm" onclick="aiSummarizeFU()">🤖 AI总结</button>
-        <button type="button" class="tool-btn" onclick="captureLocation()" id="ff-loc-btn"
-          style="${`document.getElementById('ff-ty')?.value==='拜访'?'':'display:none'`}">📍 记录位置</button>
+        <button type="button" class="tool-btn" onclick="captureLocation()" id="ff-loc-btn" style="display:none">📍 记录位置</button>
       </div>
       <span class="err-m" id="e-co2"></span>
     </div>
@@ -4220,6 +4394,13 @@ function openFUForm(id,defaultCid){
   // 初始化时检查已选客户状态
   if(f?.customerId||defaultCid){
     setTimeout(()=>checkCustStatus(f?.customerId||defaultCid),50);
+  }
+  // 初始化时检查跟进方式，如果是拜访显示位置按钮
+  if(f?.type==='拜访'){
+    setTimeout(()=>{
+      const lb=document.getElementById('ff-loc-btn');
+      if(lb)lb.style.display='inline-flex';
+    },50);
   }
 }
 
@@ -4410,7 +4591,6 @@ function clearApiKey(){
 // ══════════════════════════════════════════════════════════
 
 supa.auth.onAuthStateChange(async(event,session)=>{
-  dbg('INFO','Auth: '+event+(session?.user?.email?' '+session.user.email:''));
   if(event==='SIGNED_OUT'||event==='USER_DELETED'){
     if(currentUser){
       currentUser=null;
@@ -4426,10 +4606,7 @@ supa.auth.onAuthStateChange(async(event,session)=>{
 });
 
 (async()=>{
-  dbg('INFO','系统启动 v22');
-  dbg('INFO','Supabase: '+SUPA_URL.replace('https://','').split('.')[0]);
   const ok=await restoreSession();
-  dbg('INFO','session='+(ok?'已恢复':'未登录'));
   if(ok){
     document.getElementById('login-page').classList.add('hidden');
     await loadAllData();
