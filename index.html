@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0"/>
-<title>花花食界 CRM · v29.9 (2.1 Stable)</title>
+<title>花花食界 CRM · v29.11 (2.1 Stable)</title>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet"/>
 <!-- QRCode.js -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <!--
-  花花食界 MiniCRM v29.9 (2.1 Stable) RELEASE
+  花花食界 MiniCRM v29.11 (2.1 Stable) RELEASE
   北京花花食界食品科技有限公司 · 内部客户与任务管理系统
   ══════════════════════════════════════════════════════════════════
   v29.2 Stable 修复说明(2026-05-15):
@@ -893,6 +893,16 @@ input[type=range].tsk-prog{width:100%;accent-color:#16a34a;cursor:pointer}
 .fsel{border:1px solid var(--sv);background:var(--sn);border-radius:8px;padding:7px 9px;font-family:inherit;font-size:12px;color:var(--sl);outline:none;cursor:pointer}
 .fsel:focus{border-color:var(--g)}
 
+/* v29.10 可搜索下拉 */
+.ss-wrap{position:relative;display:inline-block;min-width:200px;max-width:280px}
+.ss-wrap .ss-input{width:100%;padding-right:24px;cursor:text;background:#fff}
+.ss-wrap .ss-arrow{position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:10px;color:var(--ms);pointer-events:none}
+.ss-list{position:absolute;top:100%;left:0;right:0;max-height:260px;overflow-y:auto;background:#fff;border:1px solid var(--sv);border-radius:7px;box-shadow:0 4px 14px rgba(0,0,0,.08);z-index:50;margin-top:2px}
+.ss-opt{padding:7px 10px;font-size:12.5px;color:var(--ink);cursor:pointer;border-bottom:1px solid #f3f4f6}
+.ss-opt:last-child{border-bottom:none}
+.ss-opt:hover{background:#f0fdf4;color:var(--gd)}
+.ss-opt.selected{background:#d1fae5;color:#065f46;font-weight:600}
+
 /* ── TABLE ── */
 .tbl-card{background:#fff;border-radius:var(--r);border:1px solid var(--sv);overflow:hidden}
 .tbl-hd{display:grid;padding:8px 14px;background:var(--sn);border-bottom:1px solid var(--sv);font-size:11px;font-weight:600;color:var(--ms);text-transform:uppercase;letter-spacing:.5px}
@@ -900,6 +910,7 @@ input[type=range].tsk-prog{width:100%;accent-color:#16a34a;cursor:pointer}
 .tbl-row:last-child{border-bottom:none}
 .tbl-row:hover{background:#f8fafc}
 .t-cols{grid-template-columns:1.8fr 1.3fr 1.1fr .7fr .8fr .9fr .8fr 90px}
+.t-cols-bulk{grid-template-columns:36px 1.8fr 1.3fr 1.1fr .7fr .8fr .9fr .8fr 90px}
 .co-n{font-weight:600;color:var(--ink)}
 .co-i{font-size:11px;color:var(--ms)}
 .ct-n{font-weight:500;color:var(--sl)}
@@ -1254,7 +1265,7 @@ input[type=range].tsk-prog{width:100%;accent-color:#16a34a;cursor:pointer}
         <div class="sb-stat-r"><span class="sb-stat-l">待跟进预警</span><span class="sb-stat-v" id="sb-ov" style="color:#fca5a5">0</span></div>
       </div>
     </nav>
-    <div class="sb-foot">北京花花食界食品科技有限公司<br>© 2026 · CRM v29.9 (2.1 Stable)</div>
+    <div class="sb-foot">北京花花食界食品科技有限公司<br>© 2026 · CRM v29.11 (2.1 Stable)</div>
   </aside>
   <div id="main">
     <div id="topbar">
@@ -1331,6 +1342,107 @@ const du    = d => d ? Math.ceil((new Date(d)-new Date(today()))/86400000) : nul
 const WD    = ['日','一','二','三','四','五','六'];
 function h(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function esc(s){return String(s||'').replace(/"/g,'""');}
+
+// v29.10:可搜索下拉组件(用于客户列表/任务列表筛选,以及表单中的客户/任务选择)
+// 用法:searchableSelect({id, options:[{value,label}], value, onChange, placeholder, allowEmpty})
+//   options: 必须是 [{value, label}] 数组
+//   value:   当前选中的 value
+//   onChange:回调函数名(字符串),如 "fFilter.cust=$VALUE$;refreshFU()"
+//            其中 $VALUE$ 会被替换为选中的 value(已用 JSON.stringify 包裹)
+//   placeholder: 输入框占位符
+//   allowEmpty: 是否允许"清空"选项
+//
+// 在表单中获取当前 value:用 getSearchableValue(id) (返回 value,不是 label!)
+// 检查元素存在:document.getElementById(id+'-wrap')
+function searchableSelect({id, options, value, onChange, placeholder, allowEmpty, emptyLabel}){
+  const cur = options.find(o=>o.value===value);
+  const display = cur ? cur.label : '';
+  const empOpt = allowEmpty ? `<div class="ss-opt" data-val="" data-lbl="${h(emptyLabel||'-- 全部 --')}" onclick="_ssPick('${id}','')">${h(emptyLabel||'-- 全部 --')}</div>` : '';
+  return `<div class="ss-wrap" id="${id}-wrap" data-onchange="${h(onChange||'')}" data-current-value="${h(value||'')}">
+    <input type="text" id="${id}" class="ss-input fsel" value="${h(display)}" placeholder="${h(placeholder||'搜索...')}" autocomplete="off"
+      oninput="_ssFilter('${id}',this.value)"
+      onfocus="_ssOpen('${id}')"
+      onblur="setTimeout(()=>_ssClose('${id}'),200)">
+    <div class="ss-arrow">▾</div>
+    <div class="ss-list" id="${id}-list" style="display:none">
+      ${empOpt}
+      ${options.map(o=>`<div class="ss-opt${o.value===value?' selected':''}" data-val="${h(o.value)}" data-lbl="${h(o.label)}" onclick="_ssPick('${id}','${esc(o.value)}')">${h(o.label)}</div>`).join('')}
+    </div>
+  </div>`;
+}
+
+// 在表单中读取当前选中的 value(value 是 id,不是 label)
+function getSearchableValue(id){
+  const wrap = document.getElementById(id+'-wrap');
+  return wrap ? (wrap.dataset.currentValue || '') : '';
+}
+
+function _ssOpen(id){
+  const list = document.getElementById(id+'-list');
+  if(list){
+    list.style.display='block';
+    list.querySelectorAll('.ss-opt').forEach(o=>o.style.display='');
+  }
+}
+function _ssClose(id){
+  const list = document.getElementById(id+'-list');
+  if(list) list.style.display='none';
+  // 失焦时,如果输入框的值不匹配任何选项,恢复到当前 selected 项的 label
+  const input = document.getElementById(id);
+  const wrap = document.getElementById(id+'-wrap');
+  if(!input || !wrap) return;
+  const selectedOpt = list?.querySelector('.ss-opt.selected');
+  const expectedLabel = selectedOpt ? (selectedOpt.dataset.lbl||selectedOpt.textContent.trim()) : '';
+  if(input.value !== expectedLabel){
+    input.value = expectedLabel;
+  }
+}
+function _ssFilter(id, q){
+  const list = document.getElementById(id+'-list');
+  if(!list) return;
+  list.style.display = 'block';
+  const qLower = String(q||'').toLowerCase().trim();
+  list.querySelectorAll('.ss-opt').forEach(o=>{
+    if(!qLower){
+      o.style.display = '';
+      return;
+    }
+    const lbl = (o.dataset.lbl || o.textContent || '').toLowerCase();
+    const val = (o.dataset.val || '').toLowerCase();
+    o.style.display = (lbl.includes(qLower) || val.includes(qLower)) ? '' : 'none';
+  });
+}
+function _ssPick(id, val){
+  const list = document.getElementById(id+'-list');
+  const input = document.getElementById(id);
+  const wrap  = document.getElementById(id+'-wrap');
+  if(!list || !input || !wrap) return;
+  // 找到选中项的 label
+  let lbl = '';
+  list.querySelectorAll('.ss-opt').forEach(o=>{
+    o.classList.remove('selected');
+    if(o.dataset.val === val){
+      o.classList.add('selected');
+      lbl = o.dataset.lbl || o.textContent.trim();
+    }
+  });
+  input.value = lbl;
+  // 关键:更新 data-current-value(getSearchableValue 读这个)
+  wrap.dataset.currentValue = val;
+  list.style.display = 'none';
+  // 执行 onChange 回调
+  const onChange = wrap.dataset.onchange;
+  if(onChange){
+    const safeVal = JSON.stringify(val);
+    try{
+      const code = onChange.replace(/\$VALUE\$/g, safeVal);
+      // eslint-disable-next-line no-new-func
+      new Function(code)();
+    }catch(e){
+      console.error('[searchableSelect] onChange error:', e, onChange);
+    }
+  }
+}
 
 // ── 字段名转换（唯一定义，无循环引用）────────────────────
 function snakeToCamel(obj){
@@ -1862,6 +1974,13 @@ async function doLogout(){
     await supa.auth.signOut();
     currentUser=null;
     DB=emptyDB(); /* N1 修复:重置所有 7 张表,避免用户切换数据残留 */
+    // v29.10:清空 UI 多选状态(防跨账号残留)
+    if(typeof selectedTaskIds!=='undefined') selectedTaskIds.clear();
+  if(typeof _taskBulkMode!=='undefined') _taskBulkMode = false;
+    if(typeof _taskBulkMode!=='undefined') _taskBulkMode = false;
+    if(typeof selectedCustIds!=='undefined') selectedCustIds.clear();
+  if(typeof _custBulkMode!=='undefined') _custBulkMode = false;
+    if(typeof _custBulkMode!=='undefined') _custBulkMode = false;
     try{sessionStorage.removeItem(CACHE_KEY);}catch(e){}
     document.getElementById('login-page').classList.remove('hidden');
     document.getElementById('lg-phone').value='';
@@ -1966,6 +2085,13 @@ async function submitChangePassword(){
     await supa.auth.signOut();
     currentUser=null;
     DB=emptyDB(); /* N1 修复:重置所有 7 张表,避免用户切换数据残留 */
+    // v29.10:清空 UI 多选状态(防跨账号残留)
+    if(typeof selectedTaskIds!=='undefined') selectedTaskIds.clear();
+  if(typeof _taskBulkMode!=='undefined') _taskBulkMode = false;
+    if(typeof _taskBulkMode!=='undefined') _taskBulkMode = false;
+    if(typeof selectedCustIds!=='undefined') selectedCustIds.clear();
+  if(typeof _custBulkMode!=='undefined') _custBulkMode = false;
+    if(typeof _custBulkMode!=='undefined') _custBulkMode = false;
     try{sessionStorage.removeItem(CACHE_KEY);}catch(e){}
     document.getElementById('login-page').classList.remove('hidden');
     document.getElementById('lg-phone').value='';
@@ -2102,8 +2228,11 @@ function lastWeekRange(){
 function nav(el,page){
   if(page==='users'&&!isAdmin()){toast('无权限访问','err');return;}
   if(page==='teamTasks'&&!isAdmin()&&!isLeader()){toast('无权限访问团队任务','err');return;}
-  // 切换页面时清空任务多选
+  // 切换页面时清空多选(任务+客户)
   if(typeof selectedTaskIds!=='undefined') selectedTaskIds.clear();
+  if(typeof _taskBulkMode!=='undefined') _taskBulkMode = false;
+  if(typeof selectedCustIds!=='undefined') selectedCustIds.clear();
+  if(typeof _custBulkMode!=='undefined') _custBulkMode = false;
   // C3 修复:清空拖拽残留状态(避免拖拽中切页面后状态污染)
   if(typeof _draggingTaskId !== 'undefined') _draggingTaskId = null;
   document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));
@@ -2501,6 +2630,7 @@ function renderTaskList(mode='my'){
     </select>`:''}
     ${(tFilter.q||tFilter.st||tFilter.pr||tFilter.cat||tFilter.dept||tFilter.assignee)?`<button class="btn btn-g btn-sm" onclick="resetTaskFilter()">× 清除</button>`:''}
     <button class="btn btn-sm" style="margin-left:auto" onclick="exportTasksToExcel()" title="导出当前筛选下的任务为 Excel">📥 导出</button>
+    ${!useKanban && !useCalendar ? `<button class="btn btn-sm ${_taskBulkMode?'btn-p':''}" onclick="toggleTaskBulkMode()" title="进入/退出批量编辑模式">${_taskBulkMode?'× 退出批量编辑':'☑ 批量编辑'}</button>` : ''}
     ${mode!=='archive'?`<button class="btn btn-ai btn-sm" onclick="openAIImportTasks()" title="从文本/Excel/Word 导入任务,AI 自动解析为结构化条目">🤖 AI 导入</button>`:''}
     ${mode!=='archive'?`<button class="btn btn-p btn-sm" onclick="openTaskForm(null)">+ 新建任务</button>`:''}
   </div>
@@ -2510,6 +2640,13 @@ function renderTaskList(mode='my'){
 
 // 批量操作选中集合(列表视图独有)
 let selectedTaskIds = new Set();
+let _taskBulkMode = false; // v29.11:批量编辑模式开关
+
+function toggleTaskBulkMode(){
+  _taskBulkMode = !_taskBulkMode;
+  if(!_taskBulkMode) selectedTaskIds.clear();
+  refreshTasks();
+}
 
 // ── 列表视图 ──────────────────────────────────────────────
 function renderTaskListView(filtered, source, mode){
@@ -2522,13 +2659,15 @@ function renderTaskListView(filtered, source, mode){
   const visibleIds = paged.map(t=>t.id);
   const allVisibleSelected = visibleIds.length>0 && visibleIds.every(id=>selectedTaskIds.has(id));
   const hasSelection = selectedTaskIds.size > 0;
+  // v29.11:批量模式由 _taskBulkMode 显式控制(标题栏按钮触发),或已有选中时自动显示
+  const showBulk = _taskBulkMode || hasSelection;
 
-  // 批量操作工具条(仅当有选中时显示)
-  const bulkBar = hasSelection ? renderBulkBar(mode) : '';
+  // 批量操作工具条(批量模式下显示)
+  const bulkBar = showBulk ? renderBulkBar(mode) : '';
 
-  // 列宽:有选中时多一列复选框
-  const colsClass = hasSelection ? 'tsk-cols-bulk' : 'tsk-cols';
-  const headerCell = hasSelection
+  // 列宽:批量模式下多一列复选框
+  const colsClass = showBulk ? 'tsk-cols-bulk' : 'tsk-cols';
+  const headerCell = showBulk
     ? `<span class="tbl-chk"><input type="checkbox" ${allVisibleSelected?'checked':''} onclick="toggleAllVisibleTasks(${JSON.stringify(visibleIds).replace(/"/g,'&quot;')})"></span>`
     : '';
 
@@ -2542,28 +2681,27 @@ function renderTaskListView(filtered, source, mode){
         const st=TSK_STATUS[normTaskStatus(t.status)]||TSK_STATUS.new;
         const dCls=dueClass(t);
         const checked = selectedTaskIds.has(t.id);
-        const chkCell = hasSelection
+        const chkCell = showBulk
           ? `<span class="tbl-chk" onclick="event.stopPropagation()"><input type="checkbox" ${checked?'checked':''} onclick="toggleTaskSelection('${t.id}')"></span>`
           : '';
 
         // 操作按钮:归档模式专属(只显示还原+删除),其他模式显示常规操作
+        // v29.11:批量模式按钮在标题栏,此处不再显示行内 ☐ 按钮
         let acts;
         if(mode==='archive'){
           acts = `
             ${ce?`<button class="btn btn-sm" onclick="unarchiveTaskAction('${t.id}')" title="还原任务">↺ 还原</button>`:''}
-            ${cd?`<button class="btn btn-d btn-sm" onclick="confirmDelTask('${t.id}')">删除</button>`:!ce?`<span style="font-size:11px;color:var(--ms)">只读</span>`:''}
-            ${!hasSelection?`<button class="btn btn-sm" onclick="selectTaskAndShowBulk('${t.id}')" title="批量操作">☐</button>`:''}`;
+            ${cd?`<button class="btn btn-d btn-sm" onclick="confirmDelTask('${t.id}')">删除</button>`:!ce?`<span style="font-size:11px;color:var(--ms)">只读</span>`:''}`;
         }else{
           acts = `
             <button class="btn btn-sm" onclick="openProgressForm('${t.id}')" title="添加进展">📝</button>
             ${t.status!=='done'&&t.status!=='archived'?`<button class="btn btn-ai btn-sm" id="ai-row-btn-${t.id}" onclick="aiSuggestNextAction('${t.id}',true)" title="AI 建议下一步">💡</button>`:''}
             ${ce?`<button class="btn btn-sm" onclick="openTaskForm('${t.id}')">编辑</button>`:''}
             ${ce && t.status==='done' ? `<button class="btn btn-sm" onclick="archiveTaskAction('${t.id}')" title="归档">📦</button>` : ''}
-            ${cd?`<button class="btn btn-d btn-sm" onclick="confirmDelTask('${t.id}')">删除</button>`:!ce?`<span style="font-size:11px;color:var(--ms)">只读</span>`:''}
-            ${!hasSelection?`<button class="btn btn-sm" onclick="selectTaskAndShowBulk('${t.id}')" title="批量操作">☐</button>`:''}`;
+            ${cd?`<button class="btn btn-d btn-sm" onclick="confirmDelTask('${t.id}')">删除</button>`:!ce?`<span style="font-size:11px;color:var(--ms)">只读</span>`:''}`;
         }
 
-        return `<div class="tbl-row ${colsClass} ${checked?'row-checked':''}" onclick="openTaskDetail('${t.id}')">
+        return `<div class="tbl-row ${colsClass} ${checked?'row-checked':''}" onclick="${showBulk?`toggleTaskSelection('${t.id}')`:`openTaskDetail('${t.id}')`}">
           ${chkCell}
           <div>
             <div class="co-n">${h(t.title)}</div>
@@ -2637,6 +2775,7 @@ function selectTaskAndShowBulk(id){
 }
 function clearTaskSelection(){
   selectedTaskIds.clear();
+  _taskBulkMode = false; // v29.11:取消按钮也退出批量模式
   refreshTasks();
 }
 
@@ -3059,6 +3198,7 @@ function switchTaskView(view){
   }
   // 切换视图时清空多选(避免幽灵选中)
   selectedTaskIds.clear();
+  _taskBulkMode = false; // v29.11:切视图退出批量模式
   tFilter.page = 1;
   refreshTasks();
 }
@@ -3444,10 +3584,15 @@ function openTaskForm(id){
         ${DB.departments.filter(d=>d.isActive!==false).map(d=>`<option value="${d.id}" ${t?.departmentId===d.id?'selected':''}>${h(d.name)}${d.type==='project'?' (项目)':''}</option>`).join('')}
       </select></div>
     <div class="fg"><label>关联客户(可选)</label>
-      <select id="tf-cust">
-        <option value="" ${!t?.customerId?'selected':''}>— 无 —</option>
-        ${visibleCustomers().map(c=>`<option value="${c.id}" ${t?.customerId===c.id?'selected':''}>${h(c.companyName)}</option>`).join('')}
-      </select></div>
+      ${searchableSelect({
+        id: 'tf-cust',
+        options: visibleCustomers().map(c=>({value:c.id, label:c.companyName})),
+        value: t?.customerId||'',
+        placeholder: '🔍 搜索客户(支持关键字)...',
+        allowEmpty: true,
+        emptyLabel: '— 无 —'
+      })}
+    </div>
     <div class="fg"><label>标签(逗号分隔)</label>
       <input id="tf-tags" value="${v('tags')}" placeholder="如:重要,客户拓展,Q2"></div>
 
@@ -3469,7 +3614,7 @@ async function saveTask(){
 
   const assigneeId=document.getElementById('tf-assignee')?.value||currentUser?.id;
   const deptId=document.getElementById('tf-dept')?.value||null;
-  const custId=document.getElementById('tf-cust')?.value||null;
+  const custId=getSearchableValue('tf-cust')||null;  // v29.10:可搜索下拉
   const assignee=DB.profiles.find(p=>p.id===assigneeId);
   const dept=DB.departments.find(d=>d.id===deptId);
   const cust=DB.customers.find(c=>c.id===custId);
@@ -5048,10 +5193,18 @@ function renderTaskFollow(){
   </div>` : ''}
 
   <div class="toolbar">
-    <select class="fsel" onchange="tfFilter.task=this.value;tfFilter.page=1;refreshTaskFollow()" style="max-width:240px">
-      <option value="">全部任务</option>
-      ${taskOpts.map(t=>`<option value="${t.id}" ${tfFilter.task===t.id?'selected':''}>${h(t.title.slice(0,40))}${t.title.length>40?'…':''}</option>`).join('')}
-    </select>
+    ${searchableSelect({
+      id: 'tf-task-search',
+      options: taskOpts.map(t=>({
+        value: t.id,
+        label: t.title.length>40 ? t.title.slice(0,40)+'…' : t.title
+      })),
+      value: tfFilter.task,
+      onChange: 'tfFilter.task=$VALUE$;tfFilter.page=1;refreshTaskFollow()',
+      placeholder: '🔍 搜索任务(支持关键字)...',
+      allowEmpty: true,
+      emptyLabel: '-- 全部任务 --'
+    })}
     <select class="fsel" onchange="tfFilter.st=this.value;tfFilter.page=1;refreshTaskFollow()">
       <option value="">全部状态变更</option>
       ${TSK_STATUS_KEYS.map(k=>`<option value="${k}" ${tfFilter.st===k?'selected':''}>→ ${TSK_STATUS[k].label}</option>`).join('')}
@@ -5883,6 +6036,19 @@ function renderCustomers(){
     {l:'合作/成交',v:vc.filter(c=>c.status==='合作中'||c.status==='成交').length,s:'正式合作',col:'#059669',ico:'🤝'},
     {l:'意向/跟进中',v:vc.filter(c=>c.status==='跟进中'||c.status==='活跃').length,s:'待转化',col:'#2563eb',ico:'🎯'},
   ];
+
+  // v29.10 多选逻辑(v29.11 改造:由 _custBulkMode 显式控制,而非依赖 hasSelection)
+  const visibleIds = paged.map(c=>c.id);
+  const allVisibleSelected = visibleIds.length>0 && visibleIds.every(id=>selectedCustIds.has(id));
+  const hasSelection = selectedCustIds.size > 0;
+  // 批量模式条件:显式打开 _custBulkMode 或已有选中
+  const showBulk = _custBulkMode || hasSelection;
+  const colsClass = showBulk ? 't-cols-bulk' : 't-cols';
+  const headerChk = showBulk
+    ? `<span class="tbl-chk"><input type="checkbox" ${allVisibleSelected?'checked':''} onclick="toggleAllVisibleCusts(${JSON.stringify(visibleIds).replace(/"/g,'&quot;')})"></span>`
+    : '';
+  const bulkBar = showBulk ? renderCustBulkBar() : '';
+
   return `<div class="pw">
   ${!isAdmin()?`<div class="perm-banner">🔒 当前仅显示您创建的客户（共 ${vc.length} 条）。如需查看全部数据请联系管理员。</div>`:''}
   <div class="stats-row">
@@ -5903,14 +6069,21 @@ function renderCustomers(){
       ${mgrs.map(m=>`<option value="${m}" ${cFilter.mgr===m?'selected':''}>${h(m)}</option>`).join('')}
     </select>`:''}
     ${(cFilter.q||cFilter.st||cFilter.lv||cFilter.mgr)?`<button class="btn btn-g btn-sm" onclick="cFilter={q:'',st:'',lv:'',mgr:'',page:1};refreshCustomers()">× 清除</button>`:''}
-    <button class="btn btn-ai btn-sm" style="margin-left:auto" onclick="openAIImportCust()" title="从文本/Excel/Word 导入客户,AI 自动解析为结构化条目">🤖 AI 导入</button>
+    <button class="btn btn-sm ${_custBulkMode?'btn-p':''}" style="margin-left:auto" onclick="toggleCustBulkMode()" title="进入/退出批量编辑模式">${_custBulkMode?'× 退出批量编辑':'☑ 批量编辑'}</button>
+    <button class="btn btn-ai btn-sm" onclick="openAIImportCust()" title="从文本/Excel/Word 导入客户,AI 自动解析为结构化条目">🤖 AI 导入</button>
     <button class="btn btn-p btn-sm" onclick="openCustForm(null)">+ 新增客户</button>
   </div>
+  ${bulkBar}
   <div class="tbl-card">
-    <div class="tbl-hd t-cols"><span>公司/行业</span><span>联系人</span><span>手机</span><span>级别</span><span>状态</span><span>最后跟进</span><span>负责人</span><span>操作</span></div>
+    <div class="tbl-hd ${colsClass}">${headerChk}<span>公司/行业</span><span>联系人</span><span>手机</span><span>级别</span><span>状态</span><span>最后跟进</span><span>负责人</span><span>操作</span></div>
     ${paged.length===0?`<div class="empty-st"><div class="ei">🔍</div><h3>暂无匹配客户</h3><p>尝试修改筛选，或新增客户</p></div>`:
       paged.map(c=>{const canEdit=isAdmin()||c.createdBy===currentUser?.id;
-        return `<div class="tbl-row t-cols" style="border-left:3px solid ${isOverdue(c)?'#dc2626':'transparent'}" onclick="openCustDetail('${c.id}')">
+        const checked = selectedCustIds.has(c.id);
+        const chkCell = showBulk
+          ? `<span class="tbl-chk" onclick="event.stopPropagation()"><input type="checkbox" ${checked?'checked':''} onclick="toggleCustSelection('${c.id}')"></span>`
+          : '';
+        return `<div class="tbl-row ${colsClass}" style="border-left:3px solid ${isOverdue(c)?'#dc2626':'transparent'}" onclick="${showBulk?`toggleCustSelection('${c.id}')`:`openCustDetail('${c.id}')`}">
+        ${chkCell}
         <div><div class="co-n">${h(c.companyName)}</div><div class="co-i">${h(c.industry||'—')} · ${h(c.city||'—')}</div></div>
         <div><div class="ct-n">${h(c.contactName)}</div><div class="ct-t">${h(c.contactTitle||'—')}</div></div>
         <div onclick="event.stopPropagation()" style="display:flex;flex-direction:column;gap:3px">
@@ -5943,6 +6116,213 @@ function renderCustomers(){
 </div>`;
 }
 function refreshCustomers(){document.getElementById('content').innerHTML=renderCustomers();}
+
+// ══════════════════════════════════════════════════════════
+// ── v29.10 客户批量操作(复刻任务模块的多选模式)
+// ══════════════════════════════════════════════════════════
+let selectedCustIds = new Set();
+let _custBulkMode = false; // v29.11:批量编辑模式开关
+
+function toggleCustBulkMode(){
+  _custBulkMode = !_custBulkMode;
+  if(!_custBulkMode) selectedCustIds.clear();
+  refreshCustomers();
+}
+
+function toggleCustSelection(id){
+  if(selectedCustIds.has(id)) selectedCustIds.delete(id);
+  else selectedCustIds.add(id);
+  refreshCustomers();
+}
+function selectCustAndShowBulk(id){
+  selectedCustIds.add(id);
+  refreshCustomers();
+}
+function clearCustSelection(){
+  selectedCustIds.clear();
+  _custBulkMode = false; // v29.11:取消按钮也退出批量模式
+  refreshCustomers();
+}
+function toggleAllVisibleCusts(ids){
+  const allSelected = ids.every(id=>selectedCustIds.has(id));
+  if(allSelected) ids.forEach(id=>selectedCustIds.delete(id));
+  else ids.forEach(id=>selectedCustIds.add(id));
+  refreshCustomers();
+}
+
+// 批量操作工具条
+function renderCustBulkBar(){
+  const n = selectedCustIds.size;
+  const selected = [...selectedCustIds].map(id=>DB.customers.find(c=>c.id===id)).filter(Boolean);
+  // 客户权限:admin 可改全部,普通用户只可改自己创建的
+  const allEditable = selected.every(c=>isAdmin() || c.createdBy===currentUser?.id);
+
+  const acts = `
+    ${allEditable?`<button class="btn btn-sm" onclick="bulkChangeCustStatus()">客户状态</button>`:''}
+    ${allEditable?`<button class="btn btn-sm" onclick="bulkChangeCustLevel()">客户级别</button>`:''}
+    ${isAdmin()?`<button class="btn btn-sm" onclick="bulkChangeCustAssignee()">改派负责人</button>`:''}
+    ${allEditable?`<button class="btn btn-d btn-sm" onclick="bulkDeleteCusts()">🗑 批量删除</button>`:''}
+    ${!allEditable?`<span style="font-size:11px;color:#92400e;padding:5px 8px">仅可操作自己创建的客户</span>`:''}
+  `;
+  return `<div class="bulk-bar">
+    <span class="bulk-bar-info">已选中 ${n} 个客户</span>
+    <div class="bulk-bar-acts">${acts}</div>
+    <button class="cancel" onclick="clearCustSelection()">取消</button>
+  </div>`;
+}
+
+// ── 批量改客户状态 ──
+function bulkChangeCustStatus(){
+  const opts = ['活跃','跟进中','暂停','合作中','成交','流失'].map(s=>`<option value="${s}">${s}</option>`).join('');
+  openModal('批量变更客户状态',
+    `<div class="form-grid">
+      <div class="fg full">
+        <label>新状态</label>
+        <select id="bulk-cust-st">${opts}</select>
+      </div>
+      <div class="fg full" style="background:#f0fdf4;border-radius:7px;padding:9px;font-size:12px;color:#166534">
+        将把已选中的 <strong>${selectedCustIds.size}</strong> 个客户改为新状态。
+      </div>
+    </div>`,
+    `<button class="btn" onclick="closeModal()">取消</button>
+     <button class="btn btn-p" onclick="applyBulkChangeCustStatus()">确认</button>`);
+}
+async function applyBulkChangeCustStatus(){
+  const newSt = document.getElementById('bulk-cust-st')?.value;
+  if(!newSt) return;
+  const ids = [...selectedCustIds];
+  const btn = document.querySelector('.modal-ft .btn-p');
+  if(btn){btn.disabled=true;btn.textContent='⏳ 更新中...';}
+  let ok=0, fail=0;
+  for(const id of ids){
+    const {error, data} = await supa.from('customers').update({status:newSt, updated_at: new Date().toISOString()}).eq('id', id).select();
+    if(error || !data || data.length===0){
+      console.error('[bulkChangeCustStatus]', id, error);
+      fail++;
+    }else ok++;
+  }
+  closeModal();
+  selectedCustIds.clear();
+  _custBulkMode = false; // v29.11:批量操作完成后退出模式
+  await loadCustomers();
+  if(curPage==='customers') refreshCustomers();
+  toast(`批量更新完成:成功 ${ok} 个${fail?`,失败 ${fail} 个`:''}`, fail>0?'err':'ok');
+}
+
+// ── 批量改客户级别 ──
+function bulkChangeCustLevel(){
+  const opts = ['A','B','C'].map(s=>`<option value="${s}">${s}级</option>`).join('');
+  openModal('批量变更客户级别',
+    `<div class="form-grid">
+      <div class="fg full">
+        <label>新级别</label>
+        <select id="bulk-cust-lv">${opts}</select>
+      </div>
+      <div class="fg full" style="background:#f0fdf4;border-radius:7px;padding:9px;font-size:12px;color:#166534">
+        将把已选中的 <strong>${selectedCustIds.size}</strong> 个客户改为新级别。
+      </div>
+    </div>`,
+    `<button class="btn" onclick="closeModal()">取消</button>
+     <button class="btn btn-p" onclick="applyBulkChangeCustLevel()">确认</button>`);
+}
+async function applyBulkChangeCustLevel(){
+  const newLv = document.getElementById('bulk-cust-lv')?.value;
+  if(!newLv) return;
+  const ids = [...selectedCustIds];
+  const btn = document.querySelector('.modal-ft .btn-p');
+  if(btn){btn.disabled=true;btn.textContent='⏳ 更新中...';}
+  let ok=0, fail=0;
+  for(const id of ids){
+    const {error, data} = await supa.from('customers').update({customer_level:newLv, updated_at: new Date().toISOString()}).eq('id', id).select();
+    if(error || !data || data.length===0) fail++;
+    else ok++;
+  }
+  closeModal();
+  selectedCustIds.clear();
+  _custBulkMode = false; // v29.11:批量操作完成后退出模式
+  await loadCustomers();
+  if(curPage==='customers') refreshCustomers();
+  toast(`批量更新完成:成功 ${ok} 个${fail?`,失败 ${fail} 个`:''}`, fail>0?'err':'ok');
+}
+
+// ── 批量改客户负责人(admin 专属) ──
+function bulkChangeCustAssignee(){
+  if(!isAdmin()){toast('仅管理员可改派客户','err');return;}
+  // 收集已激活的用户作为候选
+  const users = DB.profiles.filter(u=>u.isActive!==false);
+  const opts = users.map(u=>`<option value="${h(u.name||'')}">${h(u.name||'(未命名)')}</option>`).join('');
+  openModal('批量改派客户经理',
+    `<div class="form-grid">
+      <div class="fg full">
+        <label>新客户经理</label>
+        <select id="bulk-cust-mgr">${opts}</select>
+      </div>
+      <div class="fg full" style="background:#fef3c7;border-radius:7px;padding:9px;font-size:12px;color:#92400e">
+        将把已选中的 <strong>${selectedCustIds.size}</strong> 个客户的负责人改为新经理。<br>
+        注意:这只改 <code>assignedTo</code> 字段(姓名标签),不改 <code>createdBy</code>(数据权属)。
+      </div>
+    </div>`,
+    `<button class="btn" onclick="closeModal()">取消</button>
+     <button class="btn btn-p" onclick="applyBulkChangeCustAssignee()">确认</button>`);
+}
+async function applyBulkChangeCustAssignee(){
+  const newMgr = document.getElementById('bulk-cust-mgr')?.value;
+  if(!newMgr) return;
+  const ids = [...selectedCustIds];
+  const btn = document.querySelector('.modal-ft .btn-p');
+  if(btn){btn.disabled=true;btn.textContent='⏳ 更新中...';}
+  let ok=0, fail=0;
+  for(const id of ids){
+    const {error, data} = await supa.from('customers').update({assigned_to:newMgr, updated_at: new Date().toISOString()}).eq('id', id).select();
+    if(error || !data || data.length===0) fail++;
+    else ok++;
+  }
+  closeModal();
+  selectedCustIds.clear();
+  _custBulkMode = false; // v29.11:批量操作完成后退出模式
+  await loadCustomers();
+  if(curPage==='customers') refreshCustomers();
+  toast(`批量改派完成:成功 ${ok} 个${fail?`,失败 ${fail} 个`:''}`, fail>0?'err':'ok');
+}
+
+// ── 批量删除客户 ──
+function bulkDeleteCusts(){
+  const n = selectedCustIds.size;
+  const selected = [...selectedCustIds].map(id=>DB.customers.find(c=>c.id===id)).filter(Boolean);
+  // 检查每个客户名下的跟进记录数
+  const withFU = selected.filter(c=>DB.followups.some(f=>f.customerId===c.id));
+  let warn = `确定删除选中的 <strong>${n}</strong> 个客户?<br><br>`;
+  if(withFU.length){
+    warn += `<div style="color:#dc2626;font-weight:600;margin-bottom:6px">⚠ 其中 ${withFU.length} 个客户有跟进记录</div>`;
+    warn += `<div style="font-size:12px;color:#6b7280;margin-bottom:8px">${withFU.slice(0,3).map(c=>`「${h(c.companyName)}」`).join('、')}${withFU.length>3?` 等 ${withFU.length} 个`:''}</div>`;
+    warn += `<div style="font-size:12px;color:#7f1d1d">客户删除后,对应的跟进记录会因外键级联(ON DELETE CASCADE)一并删除。</div>`;
+  }
+  warn += `<div style="margin-top:10px;padding:9px 10px;background:#fef2f2;border-radius:7px;font-size:12px;color:#991b1b">此操作不可撤销!</div>`;
+  openConfirm(warn, async()=>{
+    closeModal();
+    const ids = [...selectedCustIds];
+    let ok=0, fail=0;
+    for(const id of ids){
+      // 先把任务里的 customer_id/customer_name 置空(避免悬空引用 — A5 修复延续)
+      const linkedTasks = DB.tasks.filter(t=>t.customerId===id);
+      if(linkedTasks.length){
+        await supa.from('tasks').update({customer_id:null, customer_name:null}).eq('customer_id', id);
+      }
+      const {error} = await supa.from('customers').delete().eq('id', id);
+      if(error){console.error('[bulkDeleteCusts]', id, error);fail++;}
+      else ok++;
+    }
+    selectedCustIds.clear();
+    _custBulkMode = false; // v29.11:批量删除后退出模式
+    await loadCustomers();
+    await loadFollowups();
+    await loadTasks();
+    if(curPage==='customers') refreshCustomers();
+    toast(`批量删除完成:成功 ${ok} 个${fail?`,失败 ${fail} 个`:''}`, fail>0?'err':'ok');
+  });
+}
+
+
 
 
 // ══════════════════════════════════════════════════════════
@@ -6477,10 +6857,15 @@ function renderFollowups(){
     ${stats.map(s=>`<div class="stat-card"><div class="stat-bar" style="background:${s.col}"></div><div class="stat-ico">${s.ico}</div><div class="stat-lbl">${s.l}</div><div class="stat-val" style="color:${s.col}">${s.v}</div><div class="stat-sub">${s.s}</div></div>`).join('')}
   </div>
   <div class="toolbar">
-    <select class="fsel" onchange="fFilter.cust=this.value;fFilter.page=1;refreshFU()">
-      <option value="">全部客户</option>
-      ${vc.map(c=>`<option value="${c.id}" ${fFilter.cust===c.id?'selected':''}>${h(c.companyName)}</option>`).join('')}
-    </select>
+    ${searchableSelect({
+      id: 'ff-cust-search',
+      options: vc.map(c=>({value:c.id, label:c.companyName})),
+      value: fFilter.cust,
+      onChange: 'fFilter.cust=$VALUE$;fFilter.page=1;refreshFU()',
+      placeholder: '🔍 搜索客户...',
+      allowEmpty: true,
+      emptyLabel: '-- 全部客户 --'
+    })}
     <select class="fsel" onchange="fFilter.type=this.value;fFilter.page=1;refreshFU()">
       <option value="">全部方式</option>
       ${['电话','拜访','微信','邮件','视频会议'].map(t=>`<option value="${t}" ${fFilter.type===t?'selected':''}>${t}</option>`).join('')}
@@ -6589,10 +6974,17 @@ async function updateProfileInDB(id, fields){
   const newName = fields.name;
   const nameChanged = (newName!==undefined && newName!==oldName);
 
-  const{error}=await supa.from('profiles')
+  // v29.10 修复:用 .select() 拿到实际更新行数,检测 RLS 静默失败
+  // 否则当 RLS 拒绝时 Supabase 返回 error=null 但更新 0 行,前端误以为成功
+  const{error, data}=await supa.from('profiles')
     .update(fields)
-    .eq('id',id);
-  if(error){toast('保存用户失败：'+error.message,'err');return false;}
+    .eq('id',id)
+    .select();
+  if(error){toast('保存用户失败:'+error.message,'err');return false;}
+  if(!data || data.length===0){
+    toast('保存失败:数据库未更新任何行(可能是 RLS 权限不足,请检查当前账号是否为 admin)','err');
+    return false;
+  }
 
   // B1 修复:用户改名时同步所有相关任务冗余字段
   if(nameChanged){
@@ -6600,14 +6992,12 @@ async function updateProfileInDB(id, fields){
       supa.from('tasks').update({assignee_name: newName}).eq('assignee_id', id),
       supa.from('tasks').update({assigner_name: newName}).eq('assigner_id', id),
       supa.from('tasks').update({created_by_name: newName}).eq('created_by', id),
-      // 进展记录的 createdByName 也同步
       supa.from('task_progress').update({created_by_name: newName}).eq('created_by', id),
     ]);
   }
 
   await loadProfiles();
   if(nameChanged){
-    // 刷新内存里的任务和进展,让 UI 立即反映新姓名
     await loadTasks();
     await loadTaskProgress();
   }
@@ -9348,21 +9738,28 @@ function openFUForm(id,defaultCid){
   const v=(k,def='')=>h(f?f[k]??def:def);
   const sel=(k,def,opts)=>opts.map(o=>`<option value="${o}" ${(f?f[k]:def)===o?'selected':''}>${o}</option>`).join('');
   const vc=visibleCustomers();
-  // 新增时在客户列表中标注暂停/流失状态
-  const custSel=vc.map(c=>{
-    const disabled=(c.status==='暂停'||c.status==='流失')&&!id;
-    const label=disabled?`${h(c.companyName)} [${c.status}]`:h(c.companyName);
-    return `<option value="${c.id}" ${(f?f.customerId:defaultCid||'')=== c.id?'selected':''} ${disabled?'style="color:#9ca3af"':''}>${label}</option>`;
-  }).join('');
+  // v29.10:可搜索下拉的选项数据(标注暂停/流失状态)
+  const custOptions = vc.map(c=>{
+    const isDimmed=(c.status==='暂停'||c.status==='流失')&&!id;
+    const lbl = isDimmed ? `${c.companyName} [${c.status}]` : c.companyName;
+    return {value:c.id, label:lbl};
+  });
+  const curCustId = f ? f.customerId : (defaultCid||'');
 
   openModal(`${id?'✏️ 编辑跟进记录':'📝 新增跟进记录'}`,`
   <div class="form-grid">
     <div class="f-sect">跟进信息</div>
     <div class="fg full">
       <label>关联客户<span class="req">*</span></label>
-      <select id="ff-cu" onchange="checkCustStatus(this.value)">
-        <option value="">-- 请选择 --</option>${custSel}
-      </select>
+      ${searchableSelect({
+        id: 'ff-cu',
+        options: custOptions,
+        value: curCustId,
+        onChange: 'checkCustStatus($VALUE$)',
+        placeholder: '🔍 搜索客户(支持关键字)...',
+        allowEmpty: true,
+        emptyLabel: '-- 请选择 --'
+      })}
       <span class="err-m" id="e-cu"></span>
       <div id="ff-status-warn" style="display:none;margin-top:6px;padding:8px 11px;background:#fef2f2;border:1px solid #fecaca;border-radius:7px;font-size:12px;color:#b91c1c;line-height:1.6"></div>
     </div>
@@ -9440,7 +9837,7 @@ function openFUForm(id,defaultCid){
 // 从跟进表单直接加入日历
 function addCalendarFromForm(){
   const date=document.getElementById('ff-nd')?.value;
-  const custId=document.getElementById('ff-cu')?.value;
+  const custId=getSearchableValue('ff-cu');  // v29.10:可搜索下拉
   const action=document.getElementById('ff-na')?.value||'跟进';
   const cust=DB.customers.find(c=>c.id===custId);
   if(!date){toast('请先选择下次跟进日期','err');return;}
@@ -9468,7 +9865,8 @@ function checkCustStatus(custId){
   }
 }
 async function saveFU(){
-  const cu=document.getElementById('ff-cu')?.value||'';
+  // v29.10:ff-cu 是可搜索下拉,用 getSearchableValue 读 value
+  const cu=getSearchableValue('ff-cu')||'';
   const co=document.getElementById('ff-co')?.value.trim()||'';
   let ok=true;
   if(!cu){document.getElementById('e-cu').textContent='必填';ok=false;}
@@ -9628,6 +10026,13 @@ supa.auth.onAuthStateChange(async(event,session)=>{
     if(currentUser){
       currentUser=null;
       DB=emptyDB(); /* N1 修复:重置所有 7 张表,避免用户切换数据残留 */
+    // v29.10:清空 UI 多选状态(防跨账号残留)
+    if(typeof selectedTaskIds!=='undefined') selectedTaskIds.clear();
+  if(typeof _taskBulkMode!=='undefined') _taskBulkMode = false;
+    if(typeof _taskBulkMode!=='undefined') _taskBulkMode = false;
+    if(typeof selectedCustIds!=='undefined') selectedCustIds.clear();
+  if(typeof _custBulkMode!=='undefined') _custBulkMode = false;
+    if(typeof _custBulkMode!=='undefined') _custBulkMode = false;
       try{sessionStorage.removeItem(CACHE_KEY);}catch(e){}
       document.getElementById('login-page').classList.remove('hidden');
       document.getElementById('lg-phone').value='';
