@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0"/>
-<title>花花食界 CRM · v30.0.2 (3.0 Beta)</title>
+<title>花花食界 CRM · v30.0.3 (3.0 Beta)</title>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet"/>
 <!-- QRCode.js -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <!--
-  花花食界 MiniCRM v30.0.2 (3.0 Beta) RELEASE
+  花花食界 MiniCRM v30.0.3 (3.0 Beta) RELEASE
   北京花花食界食品科技有限公司 · 内部客户与任务管理系统
   ══════════════════════════════════════════════════════════════════
   v29.2 Stable 修复说明(2026-05-15):
@@ -1365,7 +1365,7 @@ input[type=range].tsk-prog{width:100%;accent-color:#16a34a;cursor:pointer}
         <div class="sb-stat-r"><span class="sb-stat-l">待跟进预警</span><span class="sb-stat-v" id="sb-ov" style="color:#fca5a5">0</span></div>
       </div>
     </nav>
-    <div class="sb-foot">北京花花食界食品科技有限公司<br>© 2026 · CRM v30.0.2 (3.0 Beta)</div>
+    <div class="sb-foot">北京花花食界食品科技有限公司<br>© 2026 · CRM v30.0.3 (3.0 Beta)</div>
   </aside>
   <div id="main">
     <div id="topbar">
@@ -7231,6 +7231,8 @@ async function deleteFUFromDB(id){
 // ══════════════════════════════════════════════════════════
 
 async function updateProfileInDB(id, fields){
+  console.log('[updateProfileInDB] 开始更新用户', id, '字段:', fields);
+
   // B1 修复:如果改名,先记录旧名以便后续同步任务冗余字段
   const oldProfile = DB.profiles.find(p=>p.id===id);
   const oldName = oldProfile?.name||'';
@@ -7238,14 +7240,31 @@ async function updateProfileInDB(id, fields){
   const nameChanged = (newName!==undefined && newName!==oldName);
 
   // v29.10 修复:用 .select() 拿到实际更新行数,检测 RLS 静默失败
-  // 否则当 RLS 拒绝时 Supabase 返回 error=null 但更新 0 行,前端误以为成功
   const{error, data}=await supa.from('profiles')
     .update(fields)
     .eq('id',id)
     .select();
-  if(error){toast('保存用户失败:'+error.message,'err');return false;}
+  console.log('[updateProfileInDB] 返回:', {error, data, rowCount: data?.length});
+
+  if(error){
+    console.error('[updateProfileInDB] error:', error);
+    toast('保存失败:'+(error.message||'未知错误'),'err');
+    return false;
+  }
   if(!data || data.length===0){
-    toast('保存失败:数据库未更新任何行(可能是 RLS 权限不足,请检查当前账号是否为 admin)','err');
+    // 详细诊断:可能 RLS 拒绝,也可能 id 不存在
+    const exists = DB.profiles.find(p=>p.id===id);
+    if(!exists){
+      toast('保存失败:目标用户不存在(ID 错误)','err');
+    }else if(!isAdmin() && id !== currentUser?.id){
+      toast('保存失败:只有管理员能修改他人信息','err');
+    }else{
+      toast('保存失败:Supabase 拒绝更新。请运行 fix_profiles_rls.sql 修复 RLS 策略(F12 看详情)','err');
+      console.warn('[updateProfileInDB] update 返回 0 行 — 通常是 profiles 表的 UPDATE RLS 策略不允许 admin 改他人');
+      console.warn('  当前用户 ID:', currentUser?.id, '角色:', currentUser?.role);
+      console.warn('  目标用户 ID:', id);
+      console.warn('  解决方案:在 Supabase SQL Editor 执行 fix_profiles_rls.sql');
+    }
     return false;
   }
 
