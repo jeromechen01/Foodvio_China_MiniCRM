@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0"/>
-<title>花花食界 CRM · v30.0.1 (3.0 Beta)</title>
+<title>花花食界 CRM · v30.0.2 (3.0 Beta)</title>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet"/>
 <!-- QRCode.js -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <!--
-  花花食界 MiniCRM v30.0.1 (3.0 Beta) RELEASE
+  花花食界 MiniCRM v30.0.2 (3.0 Beta) RELEASE
   北京花花食界食品科技有限公司 · 内部客户与任务管理系统
   ══════════════════════════════════════════════════════════════════
   v29.2 Stable 修复说明(2026-05-15):
@@ -292,32 +292,103 @@ window.supabase = (function(){
 
         async insert(body){
           const rows = Array.isArray(body) ? body : [body];
-          return rest('POST', `/rest/v1/${table}`, rows);
+          // v30.0.2:返回链式对象,支持 .select()
+          let _wantSelect = false;
+          const ib = {
+            select(){
+              _wantSelect = true;
+              return ib;
+            },
+            async then(resolve){
+              try{
+                const headers = authHeaders();
+                if(_wantSelect) headers['Prefer'] = 'return=representation';
+                const r = await fetch(url+`/rest/v1/${table}`, {
+                  method:'POST',
+                  headers,
+                  body: JSON.stringify(rows)
+                });
+                let data=null;
+                try{ data=await r.json(); }catch(e){}
+                if(!r.ok){
+                  resolve({ data:null, error:{ message: data?.message||('HTTP '+r.status), code: data?.code||'', details: data?.details||'' }});
+                  return;
+                }
+                resolve({ data: _wantSelect ? (data||[]) : null, error:null });
+              }catch(e){
+                resolve({ data:null, error:{ message: e.message||'Network error' }});
+              }
+            }
+          };
+          // 兼容旧代码的 await:不调 .select() 也要能 await
+          return ib;
+        },
+
+        // v30.0.2 新增:upsert(POST + Prefer: resolution=merge-duplicates)
+        upsert(body, options){
+          const rows = Array.isArray(body) ? body : [body];
+          const onConflict = options?.onConflict || 'id';
+          let _wantSelect = false;
+          const ub = {
+            select(){
+              _wantSelect = true;
+              return ub;
+            },
+            async then(resolve){
+              try{
+                const headers = authHeaders();
+                // resolution=merge-duplicates 表示遇到冲突时合并(即 upsert)
+                headers['Prefer'] = (_wantSelect ? 'return=representation,' : '') + 'resolution=merge-duplicates';
+                const path = `/rest/v1/${table}?on_conflict=${encodeURIComponent(onConflict)}`;
+                const r = await fetch(url+path, {
+                  method:'POST',
+                  headers,
+                  body: JSON.stringify(rows)
+                });
+                let data=null;
+                try{ data=await r.json(); }catch(e){}
+                if(!r.ok){
+                  resolve({ data:null, error:{ message: data?.message||('HTTP '+r.status), code: data?.code||'', details: data?.details||'' }});
+                  return;
+                }
+                resolve({ data: _wantSelect ? (data||[]) : null, error:null });
+              }catch(e){
+                resolve({ data:null, error:{ message: e.message||'Network error' }});
+              }
+            }
+          };
+          return ub;
         },
 
         update(body){
-          // 返回链式对象，等待 .eq() 后执行
-          let _eqCol=null, _eqVal=null;
+          // 返回链式对象，等待 .eq() 后执行,支持 .select() 链式
+          let _eqCol=null, _eqVal=null, _wantSelect=false;
           const ub = {
             eq(col, val){
               _eqCol=col; _eqVal=val;
               return ub;
             },
+            select(){
+              _wantSelect = true;
+              return ub;
+            },
             async then(resolve){
               try{
                 const path = `/rest/v1/${table}?${_eqCol}=eq.${encodeURIComponent(_eqVal)}`;
+                const headers = authHeaders();
+                if(_wantSelect) headers['Prefer'] = 'return=representation';
                 const r = await fetch(url+path, {
                   method:'PATCH',
-                  headers: authHeaders(),
+                  headers,
                   body: JSON.stringify(body)
                 });
                 let data=null;
                 try{ data=await r.json(); }catch(e){}
                 if(!r.ok){
-                  resolve({ data:null, error:{ message: data?.message||('HTTP '+r.status) }});
+                  resolve({ data:null, error:{ message: data?.message||('HTTP '+r.status), code: data?.code||'', details: data?.details||'' }});
                   return;
                 }
-                resolve({ data, error:null });
+                resolve({ data: _wantSelect ? (data||[]) : null, error:null });
               }catch(e){
                 resolve({ data:null, error:{ message: e.message||'Network error' }});
               }
@@ -327,25 +398,35 @@ window.supabase = (function(){
         },
 
         delete(){
-          let _eqCol=null, _eqVal=null;
+          let _eqCol=null, _eqVal=null, _wantSelect=false;
           const db = {
             eq(col, val){
               _eqCol=col; _eqVal=val;
               return db;
             },
+            select(){
+              _wantSelect = true;
+              return db;
+            },
             async then(resolve){
               try{
                 const path = `/rest/v1/${table}?${_eqCol}=eq.${encodeURIComponent(_eqVal)}`;
+                const headers = authHeaders();
+                if(_wantSelect) headers['Prefer'] = 'return=representation';
                 const r = await fetch(url+path, {
                   method:'DELETE',
-                  headers: authHeaders()
+                  headers
                 });
                 if(!r.ok){
                   let data=null;try{data=await r.json();}catch(e){}
-                  resolve({ data:null, error:{ message:data?.message||('HTTP '+r.status) }});
+                  resolve({ data:null, error:{ message:data?.message||('HTTP '+r.status), code:data?.code||'' }});
                   return;
                 }
-                resolve({ data:null, error:null });
+                let data = null;
+                if(_wantSelect){
+                  try{ data=await r.json(); }catch(e){}
+                }
+                resolve({ data: _wantSelect ? (data||[]) : null, error:null });
               }catch(e){
                 resolve({ data:null, error:{ message:e.message||'Network error' }});
               }
@@ -470,10 +551,29 @@ window.supabase = (function(){
       try{ ch.unsubscribe(); }catch(e){}
     }
 
+    // v30.0.2 新增:RPC(调用 Postgres 函数)
+    async function rpc(fnName, params){
+      try{
+        const r = await fetch(url+`/rest/v1/rpc/${fnName}`, {
+          method:'POST',
+          headers: authHeaders(),
+          body: JSON.stringify(params||{})
+        });
+        let data=null;
+        try{ data=await r.json(); }catch(e){}
+        if(!r.ok){
+          return { data:null, error:{ message: data?.message||('HTTP '+r.status), code: data?.code||'' }};
+        }
+        return { data, error:null };
+      }catch(e){
+        return { data:null, error:{ message:e.message||'Network error' }};
+      }
+    }
+
     // 初始化时加载已有 session
     loadSession();
 
-    return { auth, from, channel, removeChannel };
+    return { auth, from, channel, removeChannel, rpc };
   }
 
   return { createClient };
@@ -1265,7 +1365,7 @@ input[type=range].tsk-prog{width:100%;accent-color:#16a34a;cursor:pointer}
         <div class="sb-stat-r"><span class="sb-stat-l">待跟进预警</span><span class="sb-stat-v" id="sb-ov" style="color:#fca5a5">0</span></div>
       </div>
     </nav>
-    <div class="sb-foot">北京花花食界食品科技有限公司<br>© 2026 · CRM v30.0.1 (3.0 Beta)</div>
+    <div class="sb-foot">北京花花食界食品科技有限公司<br>© 2026 · CRM v30.0.2 (3.0 Beta)</div>
   </aside>
   <div id="main">
     <div id="topbar">
@@ -8183,7 +8283,7 @@ function renderSharedAIConfigSection(){
       <div class="fg full" style="display:block">
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px;flex-wrap:wrap">
           <button class="btn" onclick="testSharedAIConnection()">🧪 测试连接</button>
-          <button class="btn btn-p" onclick="saveSharedAIFromForm()">💾 保存并启用</button>
+          <button class="btn btn-p" onclick="saveSharedAIFromForm(this)">💾 保存并启用</button>
         </div>
         <div id="shared-test-result" class="ai-test-result" style="display:none;margin-top:8px"></div>
       </div>
@@ -8244,7 +8344,7 @@ function _onSharedModelPresetChange(presetId){
 }
 
 // 从表单读取并保存共享 AI 配置
-async function saveSharedAIFromForm(){
+async function saveSharedAIFromForm(btn){
   console.log('[saveSharedAIFromForm] 开始执行...');
   if(!isAdmin()){
     toast('仅管理员可配置','err');
@@ -8267,11 +8367,9 @@ async function saveSharedAIFromForm(){
   if(isNaN(dailyLimit)||dailyLimit<0){toast('每日上限必须 ≥ 0','err');return;}
   if(isNaN(bulkCost)||bulkCost<1){toast('批量倍数必须 ≥ 1','err');return;}
 
-  // 找到保存按钮显示 loading
-  const btns = document.querySelectorAll('button.btn-p');
-  let saveBtn = null;
-  btns.forEach(b=>{ if(b.textContent.includes('保存并启用')||b.textContent.includes('保存中')) saveBtn=b; });
-  if(saveBtn){saveBtn.disabled=true; saveBtn.textContent='⏳ 保存中...';}
+  // 直接用 onclick 传入的 btn(更可靠)
+  const originalText = btn?.textContent || '💾 保存并启用';
+  if(btn){btn.disabled=true; btn.textContent='⏳ 保存中...';}
 
   const ok = await saveSharedAIConfig({
     modelId, modelName, protocol, endpoint, apiKey,
@@ -8279,7 +8377,7 @@ async function saveSharedAIFromForm(){
     bulkActionCost: bulkCost,
   });
 
-  if(saveBtn){saveBtn.disabled=false; saveBtn.textContent='💾 保存并启用';}
+  if(btn){btn.disabled=false; btn.textContent=originalText;}
 
   console.log('[saveSharedAIFromForm] 保存结果:', ok);
   if(ok) renderPage('ai');
