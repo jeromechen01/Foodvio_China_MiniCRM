@@ -3,13 +3,49 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0"/>
-<title>花花食界客户与任务管理系统 · v33.0 (3.3 Beta)</title>
+<title>花花食界客户与任务管理系统 · v33.0 (3.3.5 Beta)</title>
 <!-- v31.0.2: 移除 Google Fonts(国内访问超时),改用系统字体回退 -->
 <!-- QRCode.js -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <!--
   花花食界客户与任务管理系统 v33.0 (3.3 Beta) RELEASE
   北京花花食界食品科技有限公司 · 内部客户与任务管理系统
+  ══════════════════════════════════════════════════════════════════
+  v33.0.3.5 修复说明(2026-05-30):权限范围对齐(三层角色 + 指派双向可见)
+    需求:① 普通用户仅见自己范围内的客户/跟进/任务;② admin 见全部;
+          ③ 部门/项目负责人(leader)可见所辖成员的客户/跟进/任务;
+          ④ 一旦发生"指派",指派者与接收者双方都能看到该记录。
+    前端改动(crm.html):
+      - 新增 myManagedUserIds()/myManagedUserNames():负责人可管辖的成员集合
+      - 新增 canViewCustomer()/canEditCustomer()/canViewFollowup():单条记录权限
+      - visibleCustomers()/visibleFollowups():由"仅 created_by"扩展为
+          创建人 + 被指派负责经理(按姓名) + 管辖成员的记录
+      - visibleTasks()/teamTasks():leader 由"仅按部门标签"扩展为
+          "部门标签 OR 负责人/创建人是所辖成员"(成员归属维度)
+      - 客户详情/编辑/列表/批量/周报 的权限判断统一走上述函数
+      - 跟进的"编辑/删除"仍限创建人+admin(个人记录);leader 可见不可改
+    ⚠ 必须同步执行 RLS 迁移:migration_v33.0.3.5_permission_scope.sql
+       (RLS 是唯一权威;不执行则 leader/接收者的数据不会被加载,前端放宽也无效)
+    ⚠ 已知局限:客户"负责经理"以姓名(assigned_to 文本)存储,接收者按姓名匹配,
+       重名会误放行。建议后续将 assigned_to 迁移为 assigned_to_id(关联 profiles)。
+
+  ══════════════════════════════════════════════════════════════════
+  v33.0.3.4 修复说明(2026-05-30):字段名称一致性
+    1. 【客户】AI 客户导入预览卡片的字段名与"新增客户"表单完全对齐:
+         联系人→联系人姓名 / 职位→联系人职位 / 电话→手机号码 /
+         邮箱→邮箱地址 / 城市→所在城市 / 级别→客户级别 /
+         状态→客户状态 / 来源→客户来源
+    2. 【客户】Excel 导入新增"表头一致性校验":上传的 Excel 列名会与
+         系统标准字段名比对(含常见近义词),无法匹配的列名会在预览页
+         以橙色横幅提醒用户,并列出标准字段名供改名对齐
+    3. 【客户】Excel 导入新增"行数对应校验":若 AI 解析出的客户条数
+         与 Excel 数据行数不一致,预览页提醒用户核对(每行=一条记录)
+    4. 【任务】AI 任务导入预览卡片字段名与"新建任务"表单对齐:
+         所属部门→所属部门/项目 / 关联客户→关联客户(可选);
+         并补回被 AI 提取但此前不可见的"起始日期""标签(逗号分隔)"字段
+    5. 【重构】任务导入卡片渲染统一为单一 _renderAIImpTaskCard(),
+         消除预览/重渲染两处重复代码,避免字段名再次漂移
+
   ══════════════════════════════════════════════════════════════════
   v29.2 Stable 修复说明(2026-05-15):
     在 v29.1 基础上,经第四轮 CEO + 首席架构师全面审查(完全不带前轮预设)
@@ -1410,7 +1446,7 @@ input[type=range].tsk-prog{width:100%;accent-color:#16a34a;cursor:pointer}
         <div class="sb-stat-r"><span class="sb-stat-l">待跟进预警</span><span class="sb-stat-v" id="sb-ov" style="color:#fca5a5">0</span></div>
       </div>
     </nav>
-    <div class="sb-foot">北京花花食界食品科技有限公司<br>© 2026 · 客户与任务管理系统 v33.0 (3.3 Beta)</div>
+    <div class="sb-foot">北京花花食界食品科技有限公司<br>© 2026 · 客户与任务管理系统 v33.0 (3.3.5 Beta)</div>
   </aside>
   <div id="main">
     <div id="topbar">
@@ -1745,14 +1781,72 @@ let currentUser=null;
 function isAdmin(){return currentUser?.role==='admin';}
 function isOverdue(c){return c.updatedAt&&du(c.updatedAt)<-14&&c.status!=='流失';}
 
-// 管理员看全部，普通用户只看自己创建的
+// ══════════════════════════════════════════════════════════
+// v33.0.3.5 — 权限范围统一(三层角色 + 指派双向可见)
+//   admin   : 全部
+//   leader  : 自己 + 所管辖部门/项目内全部成员的客户/跟进/任务
+//   user    : 仅自己 created_by;以及"指派"涉及到自己的记录(双向可见)
+//   指派双向: 客户 assigned_to(负责经理姓名) / 任务 assignee+assigner,
+//             指派者与接收者均可见
+// ══════════════════════════════════════════════════════════
+
+// 当前用户可管辖的成员 userId 集合(含自己;若为部门/项目负责人,含全部组员)
+function myManagedUserIds(){
+  const ids = new Set();
+  if(!currentUser) return ids;
+  ids.add(currentUser.id);
+  const deptIds = myLeadingDeptIds();
+  if(deptIds.length){
+    const deptSet = new Set(deptIds);
+    DB.departmentMembers.forEach(m=>{ if(deptSet.has(m.departmentId)) ids.add(m.userId); });
+  }
+  return ids;
+}
+// 上述成员对应的姓名集合(客户负责经理 assignedTo 以"姓名"存储,需按名匹配)
+function myManagedUserNames(){
+  const ids = myManagedUserIds();
+  const names = new Set();
+  DB.profiles.forEach(p=>{ if(ids.has(p.id) && p.name) names.add(String(p.name).trim()); });
+  return names;
+}
+
+// 单条客户是否对当前用户可见
+// = admin / 创建人(指派者) / 被指派的负责经理(接收者,按姓名) /
+//   我管辖成员创建的 / 指派给我管辖成员的
+function canViewCustomer(c){
+  if(!c||!currentUser) return false;
+  if(isAdmin()) return true;
+  const uid = currentUser.id;
+  const myName = String(currentUser.name||'').trim();
+  if(c.createdBy===uid) return true;                                  // 我创建/指派的
+  if(myName && String(c.assignedTo||'').trim()===myName) return true; // 指派给我的
+  if(myManagedUserIds().has(c.createdBy)) return true;                // 我管辖成员创建的
+  const at = String(c.assignedTo||'').trim();
+  if(at && myManagedUserNames().has(at)) return true;                 // 指派给我管辖成员的
+  return false;
+}
+// 客户可编辑范围 = 可见范围(创建人/接收者/管辖 leader/admin)
+function canEditCustomer(c){ return canViewCustomer(c); }
+
+// 管理员看全部，其余按 canViewCustomer 过滤
 function visibleCustomers(){
-  if(isAdmin()) return DB.customers;               // 管理员：全部
-  return DB.customers.filter(c=>c.createdBy===currentUser?.id); // 普通用户：仅自己
+  if(isAdmin()) return DB.customers;
+  return DB.customers.filter(canViewCustomer);
+}
+
+// 单条跟进是否可见:admin / 自己创建 / 我管辖成员创建 / 所属客户对我可见
+function canViewFollowup(f){
+  if(!f||!currentUser) return false;
+  if(isAdmin()) return true;
+  if(f.createdBy===currentUser.id) return true;
+  if(myManagedUserIds().has(f.createdBy)) return true;
+  const cust = DB.customers.find(c=>c.id===f.customerId);
+  if(cust && canViewCustomer(cust)) return true;   // 能看到客户即可看其完整跟进时间线
+  return false;
 }
 function visibleFollowups(){
-  if(isAdmin()) return DB.followups;               // 管理员：全部
-  return DB.followups.filter(f=>f.createdBy===currentUser?.id); // 普通用户：仅自己
+  if(isAdmin()) return DB.followups;
+  return DB.followups.filter(canViewFollowup);
 }
 
 // ══════════════════════════════════════════════════════════
@@ -1774,22 +1868,25 @@ function myLeadingDeptIds(){
   DB.departments.forEach(d=>{ if(d.leaderId===currentUser.id) ids.add(d.id); });
   return [...ids];
 }
-// 任务可见性:admin 全部;leader 看本部门;user 看与自己相关的
+// 任务可见性:admin 全部;leader 看本部门(按部门标签 + 按成员归属);user 看与自己相关的
 function visibleTasks(includeArchived=false){
   let list = DB.tasks;
   if(!isAdmin()){
     const myDeptIds = myLeadingDeptIds();
     const uid = currentUser?.id;
+    const managed = myManagedUserIds();   // 含自己 + 所管辖部门成员
     // v32:加入协作者维度 — 我是 task_assignees 成员的任务也可见
     const myCollabTaskIds = new Set(
       (DB.taskAssignees||[]).filter(a=>a.userId===uid).map(a=>a.taskId)
     );
     list = list.filter(t=>(
-         t.assigneeId===uid
-      || t.assignerId===uid
-      || t.createdBy ===uid
-      || myCollabTaskIds.has(t.id)      // v32:作为协作者
-      || (t.departmentId && myDeptIds.includes(t.departmentId))
+         t.assigneeId===uid               // 接收者
+      || t.assignerId===uid               // 指派者
+      || t.createdBy ===uid               // 创建人
+      || myCollabTaskIds.has(t.id)        // v32:作为协作者
+      || (t.departmentId && myDeptIds.includes(t.departmentId))  // 任务挂在我管的部门下
+      || managed.has(t.assigneeId)        // v33.0.3.5:负责人是我管辖的成员
+      || managed.has(t.createdBy)         // v33.0.3.5:创建人是我管辖的成员
     ));
   }
   if(!includeArchived) list = list.filter(t=>t.status!=='archived');
@@ -1811,12 +1908,17 @@ function myTasks(includeArchived=false){
   if(!includeArchived) list = list.filter(t=>t.status!=='archived');
   return list;
 }
-// 团队任务:leader/admin 可见
+// 团队任务:leader/admin 可见(按部门标签 + 按成员归属)
 function teamTasks(includeArchived=false){
   if(isAdmin()) return includeArchived ? DB.tasks : DB.tasks.filter(t=>t.status!=='archived');
   if(!isLeader()) return [];
   const myDeptIds = myLeadingDeptIds();
-  let list = DB.tasks.filter(t=>t.departmentId && myDeptIds.includes(t.departmentId));
+  const managed = myManagedUserIds();   // 含我自己 + 部门成员
+  let list = DB.tasks.filter(t=>
+       (t.departmentId && myDeptIds.includes(t.departmentId))
+    || managed.has(t.assigneeId)        // v33.0.3.5:负责人是组员
+    || managed.has(t.createdBy)         // v33.0.3.5:创建人是组员
+  );
   if(!includeArchived) list = list.filter(t=>t.status!=='archived');
   return list;
 }
@@ -7057,25 +7159,22 @@ function _aiImportNormalizeTask(t){
 }
 
 // ── 步骤 3:预览 + 编辑 ──────────────────────────────────
-function openAIImportPreview(){
-  if(_aiImportDraft.length === 0){toast('暂无可预览的任务','err');return;}
-
+// v33.0.3.4:统一的任务导入卡片渲染(预览与重渲染共用,字段名与"新建任务"表单保持一致)
+function _renderAIImpTaskCard(t, idx){
   const allUsers = DB.profiles.filter(u=>u.isActive!==false);
   const deptOpts = DB.departments.filter(d=>d.isActive!==false);
   const custOpts = visibleCustomers();
-
   const PRIO_LBL = {urgent:'紧急',high:'高',normal:'普通',low:'低'};
-  const cardHTML = (t, idx)=>{
-    return `<div class="ai-imp-card ${t._skip?'skipped':''}" data-idx="${idx}">
+  return `<div class="ai-imp-card ${t._skip?'skipped':''}" data-idx="${idx}">
       <div class="ai-imp-card-hd">
         <input type="checkbox" ${!t._skip?'checked':''} onchange="toggleAIImpRowSkip(${idx},!this.checked)" title="勾选表示要导入">
         <span class="ai-imp-card-num">#${idx+1}</span>
-        <input class="ai-imp-card-ttl" type="text" value="${h(t.title)}" placeholder="任务标题" oninput="updateAIImpField(${idx},'title',this.value)">
+        <input class="ai-imp-card-ttl" type="text" value="${h(t.title)}" placeholder="任务标题 *" oninput="updateAIImpField(${idx},'title',this.value)">
         <button class="btn btn-d btn-sm" onclick="removeAIImpRow(${idx})" style="padding:3px 8px;font-size:11px">删除</button>
       </div>
       <div class="ai-imp-card-grid">
         <div class="ai-imp-fg">
-          <label>优先级</label>
+          <label>优先级 *</label>
           <select onchange="updateAIImpField(${idx},'priority',this.value)">
             ${['urgent','high','normal','low'].map(p=>`<option value="${p}" ${t.priority===p?'selected':''}>${PRIO_LBL[p]}</option>`).join('')}
           </select>
@@ -7087,29 +7186,37 @@ function openAIImportPreview(){
           </select>
         </div>
         <div class="ai-imp-fg">
-          <label>截止日期</label>
+          <label>起始日期</label>
+          <input type="date" value="${t.startDate||''}" onchange="updateAIImpField(${idx},'startDate',this.value)">
+        </div>
+        <div class="ai-imp-fg">
+          <label>截止日期 *</label>
           <input type="date" value="${t.dueDate||''}" onchange="updateAIImpField(${idx},'dueDate',this.value)">
         </div>
         <div class="ai-imp-fg">
-          <label>负责人</label>
+          <label>负责人 *</label>
           <select onchange="updateAIImpRowAssignee(${idx},this.value)">
             <option value="">— 我自己 —</option>
             ${allUsers.map(u=>`<option value="${u.id}" ${t.assigneeId===u.id?'selected':''}>${h(u.name||u.email||'')}</option>`).join('')}
           </select>
         </div>
         <div class="ai-imp-fg">
-          <label>所属部门</label>
+          <label>所属部门/项目</label>
           <select onchange="updateAIImpRowDept(${idx},this.value)">
             <option value="">— 无 —</option>
-            ${deptOpts.map(d=>`<option value="${d.id}" ${t.departmentId===d.id?'selected':''}>${h(d.name)}</option>`).join('')}
+            ${deptOpts.map(d=>`<option value="${d.id}" ${t.departmentId===d.id?'selected':''}>${h(d.name)}${d.type==='project'?' (项目)':''}</option>`).join('')}
           </select>
         </div>
         <div class="ai-imp-fg">
-          <label>关联客户</label>
+          <label>关联客户(可选)</label>
           <select onchange="updateAIImpRowCust(${idx},this.value)">
             <option value="">— 无 —</option>
             ${custOpts.map(c=>`<option value="${c.id}" ${t.customerId===c.id?'selected':''}>${h(c.companyName)}</option>`).join('')}
           </select>
+        </div>
+        <div class="ai-imp-fg">
+          <label>标签(逗号分隔)</label>
+          <input type="text" value="${h(t.tags||'')}" oninput="updateAIImpField(${idx},'tags',this.value)" placeholder="如:重要,客户拓展,Q2">
         </div>
         <div class="ai-imp-fg" style="grid-column:1 / -1">
           <label>任务描述</label>
@@ -7117,7 +7224,12 @@ function openAIImportPreview(){
         </div>
       </div>
     </div>`;
-  };
+}
+
+function openAIImportPreview(){
+  if(_aiImportDraft.length === 0){toast('暂无可预览的任务','err');return;}
+
+  const cardHTML = (t, idx)=> _renderAIImpTaskCard(t, idx);
 
   const summary = ()=>{
     const total = _aiImportDraft.length;
@@ -7194,64 +7306,7 @@ function removeAIImpRow(idx){
 function _renderAIImpCards(){
   const wrap = document.getElementById('ai-imp-cards-wrap');
   if(!wrap) return;
-  const allUsers = DB.profiles.filter(u=>u.isActive!==false);
-  const deptOpts = DB.departments.filter(d=>d.isActive!==false);
-  const custOpts = visibleCustomers();
-  const PRIO_LBL = {urgent:'紧急',high:'高',normal:'普通',low:'低'};
-
-  wrap.innerHTML = _aiImportDraft.map((t, idx)=>{
-    return `<div class="ai-imp-card ${t._skip?'skipped':''}" data-idx="${idx}">
-      <div class="ai-imp-card-hd">
-        <input type="checkbox" ${!t._skip?'checked':''} onchange="toggleAIImpRowSkip(${idx},!this.checked)" title="勾选表示要导入">
-        <span class="ai-imp-card-num">#${idx+1}</span>
-        <input class="ai-imp-card-ttl" type="text" value="${h(t.title)}" placeholder="任务标题" oninput="updateAIImpField(${idx},'title',this.value)">
-        <button class="btn btn-d btn-sm" onclick="removeAIImpRow(${idx})" style="padding:3px 8px;font-size:11px">删除</button>
-      </div>
-      <div class="ai-imp-card-grid">
-        <div class="ai-imp-fg">
-          <label>优先级</label>
-          <select onchange="updateAIImpField(${idx},'priority',this.value)">
-            ${['urgent','high','normal','low'].map(p=>`<option value="${p}" ${t.priority===p?'selected':''}>${PRIO_LBL[p]}</option>`).join('')}
-          </select>
-        </div>
-        <div class="ai-imp-fg">
-          <label>分类</label>
-          <select onchange="updateAIImpField(${idx},'category',this.value)">
-            ${TSK_CATEGORY.map(c=>`<option value="${c}" ${t.category===c?'selected':''}>${c}</option>`).join('')}
-          </select>
-        </div>
-        <div class="ai-imp-fg">
-          <label>截止日期</label>
-          <input type="date" value="${t.dueDate||''}" onchange="updateAIImpField(${idx},'dueDate',this.value)">
-        </div>
-        <div class="ai-imp-fg">
-          <label>负责人</label>
-          <select onchange="updateAIImpRowAssignee(${idx},this.value)">
-            <option value="">— 我自己 —</option>
-            ${allUsers.map(u=>`<option value="${u.id}" ${t.assigneeId===u.id?'selected':''}>${h(u.name||u.email||'')}</option>`).join('')}
-          </select>
-        </div>
-        <div class="ai-imp-fg">
-          <label>所属部门</label>
-          <select onchange="updateAIImpRowDept(${idx},this.value)">
-            <option value="">— 无 —</option>
-            ${deptOpts.map(d=>`<option value="${d.id}" ${t.departmentId===d.id?'selected':''}>${h(d.name)}</option>`).join('')}
-          </select>
-        </div>
-        <div class="ai-imp-fg">
-          <label>关联客户</label>
-          <select onchange="updateAIImpRowCust(${idx},this.value)">
-            <option value="">— 无 —</option>
-            ${custOpts.map(c=>`<option value="${c.id}" ${t.customerId===c.id?'selected':''}>${h(c.companyName)}</option>`).join('')}
-          </select>
-        </div>
-        <div class="ai-imp-fg" style="grid-column:1 / -1">
-          <label>任务描述</label>
-          <textarea rows="2" oninput="updateAIImpField(${idx},'description',this.value)" placeholder="任务详细说明...">${h(t.description||'')}</textarea>
-        </div>
-      </div>
-    </div>`;
-  }).join('');
+  wrap.innerHTML = _aiImportDraft.map((t, idx)=> _renderAIImpTaskCard(t, idx)).join('');
 }
 
 // 负责人/部门/客户的更新需要同时填 _name 字段(冗余)
@@ -7497,7 +7552,7 @@ function renderCustomers(){
   <div class="tbl-card">
     <div class="tbl-hd ${colsClass}">${headerChk}<span>公司/行业</span><span>联系人</span><span>手机</span><span>级别</span><span>状态</span><span>最后跟进</span><span>负责人</span><span>操作</span></div>
     ${paged.length===0?`<div class="empty-st"><div class="ei">🔍</div><h3>暂无匹配客户</h3><p>尝试修改筛选，或新增客户</p></div>`:
-      paged.map(c=>{const canEdit=isAdmin()||c.createdBy===currentUser?.id;
+      paged.map(c=>{const canEdit=canEditCustomer(c);
         const checked = selectedCustIds.has(c.id);
         const chkCell = showBulk
           ? `<span class="tbl-chk" onclick="event.stopPropagation()"><input type="checkbox" ${checked?'checked':''} onclick="toggleCustSelection('${c.id}')"></span>`
@@ -7575,7 +7630,7 @@ function renderCustBulkBar(){
   const n = selectedCustIds.size;
   const selected = [...selectedCustIds].map(id=>DB.customers.find(c=>c.id===id)).filter(Boolean);
   // 客户权限:admin 可改全部,普通用户只可改自己创建的
-  const allEditable = selected.every(c=>isAdmin() || c.createdBy===currentUser?.id);
+  const allEditable = selected.every(c=>canEditCustomer(c));
 
   const acts = `
     ${allEditable?`<button class="btn btn-sm" onclick="bulkChangeCustStatus()">客户状态</button>`:''}
@@ -7750,10 +7805,104 @@ function bulkDeleteCusts(){
 // ══════════════════════════════════════════════════════════
 
 let _aiImportCustDraft = [];
+// v33.0.3.4:Excel 表头校验结果(仅 Excel 导入时填充,用于"字段一致性提醒")
+let _aiImportCustExcelMeta = null;
+
+// 客户字段的"标准名称"——必须与"新增客户"表单中的 label 完全一致
+const CUST_FIELD_LABELS = {
+  companyName:'公司名称', contactName:'联系人姓名', contactTitle:'联系人职位',
+  phone:'手机号码', email:'邮箱地址', city:'所在城市', address:'详细地址',
+  industry:'行业', source:'客户来源', customerLevel:'客户级别',
+  status:'客户状态', assignedTo:'负责客户经理', notes:'备注',
+};
+// 每个标准字段可接受的 Excel 表头近义词(用于识别用户上传的表头)
+const CUST_FIELD_ALIASES = {
+  companyName:  ['公司名称','公司','公司全称','客户名称','客户','客户公司','企业名称','企业','企业名','单位','单位名称','company','companyname','name'],
+  contactName:  ['联系人姓名','联系人','姓名','对接人','联系人名称','contact','contactname'],
+  contactTitle: ['联系人职位','职位','职务','岗位','头衔','title'],
+  phone:        ['手机号码','手机号','手机','电话','电话号码','联系电话','联系方式','phone','tel','mobile'],
+  email:        ['邮箱地址','邮箱','电子邮箱','电子邮件','邮件','email','mail'],
+  city:         ['所在城市','城市','地区','所属城市','city'],
+  address:      ['详细地址','地址','通讯地址','公司地址','address'],
+  industry:     ['行业','所属行业','行业类型','industry'],
+  source:       ['客户来源','来源','获客来源','source'],
+  customerLevel:['客户级别','级别','等级','客户等级','level','grade'],
+  status:       ['客户状态','状态','跟进状态','status'],
+  assignedTo:   ['负责客户经理','负责经理','客户经理','负责人','负责员工','所属销售','跟进人','assignedto','owner'],
+  notes:        ['备注','备注信息','说明','其他','remark','remarks','notes','note'],
+};
+
+// 归一化表头/别名:去空格、标点、必填标记,转小写
+function _aiNormHeader(s){
+  return String(s||'').toLowerCase()
+    .replace(/必填|选填|可选|required/g,'')
+    .replace(/[\s*（）()【】\[\]{}<>:：、,，.。;；!！?？"'`·\-_/\\|]/g,'');
+}
+
+// 校验 Excel 表头与系统标准字段是否一致(仅"提醒",不阻断导入)
+// 返回 {headers, matched:{field:header}, unknown:[header...], dataRowCount}
+function _aiCheckCustExcelHeaders(rawText){
+  const lines = String(rawText||'').split('\n').filter(l=>l.trim() && !l.includes('--- 下一个工作表'));
+  if(lines.length === 0) return null;
+  const headers = lines[0].split('|').map(s=>s.trim()).filter(Boolean);
+  // 少于 2 列大概率不是规范表格(可能是自由文本被当成 Excel),跳过校验
+  if(headers.length < 2) return null;
+
+  const matched = {};
+  const unknown = [];
+  headers.forEach(hd=>{
+    const n = _aiNormHeader(hd);
+    if(!n){ return; }
+    let best = null, bestLen = 0, exact = false;
+    for(const f in CUST_FIELD_ALIASES){
+      for(const a of CUST_FIELD_ALIASES[f]){
+        const na = _aiNormHeader(a);
+        if(!na) continue;
+        if(na === n){ best = f; exact = true; bestLen = na.length; break; }
+        if((n.includes(na) || na.includes(n)) && na.length > bestLen){ best = f; bestLen = na.length; }
+      }
+      if(exact) break;
+    }
+    if(best && !matched[best]) matched[best] = hd;
+    else if(!best) unknown.push(hd);
+  });
+  const dataRowCount = Math.max(0, lines.length - 1);  // 总行数 - 表头 = 数据条数
+  return {headers, matched, unknown, dataRowCount};
+}
+
+// 生成"字段一致性提醒"横幅 HTML(无问题返回空串)
+function _aiCustImportWarningHTML(){
+  const m = _aiImportCustExcelMeta;
+  if(!m) return '';
+  const parts = [];
+
+  // 1) 未能识别的表头(与标准字段名不一致)
+  if(m.unknown && m.unknown.length){
+    const stdNames = Object.values(CUST_FIELD_LABELS).join('、');
+    parts.push(`<div style="margin-bottom:6px">
+      ⚠ 以下 Excel 列名未匹配到系统标准字段,AI 仍会尽力识别,但建议改名后重新导入:
+      <div style="margin-top:4px"><strong style="color:#b45309">${m.unknown.map(h2=>h(h2)).join('、')}</strong></div>
+      <div style="margin-top:4px;color:#92400e">系统标准字段名(请对齐):${stdNames}</div>
+    </div>`);
+  }
+
+  // 2) 解析条数与 Excel 数据行数不一致(每行应对应一条记录)
+  const parsedCount = _aiImportCustDraft.length;
+  if(m.dataRowCount && parsedCount !== m.dataRowCount){
+    parts.push(`<div>
+      ⚠ Excel 共 <strong>${m.dataRowCount}</strong> 行数据,AI 解析出 <strong>${parsedCount}</strong> 条客户。
+      二者不一致,可能有行被遗漏或合并,请逐条核对(每一行应对应一条客户记录)。
+    </div>`);
+  }
+
+  if(parts.length === 0) return '';
+  return `<div style="margin-bottom:12px;padding:9px 12px;background:#fffbeb;border-left:3px solid #f59e0b;border-radius:6px;font-size:12px;color:#92400e;line-height:1.7">${parts.join('')}</div>`;
+}
 
 // ── 入口:选择导入方式 ────────────────────────────────────
 function openAIImportCust(){
   _aiImportCustDraft = [];
+  _aiImportCustExcelMeta = null;  // 重置上一次的表头校验结果
   openModal('🤖 AI 客户导入', `
     <div style="margin-bottom:12px;color:var(--sl);font-size:13px;line-height:1.6">
       上传或粘贴内容,AI 将自动识别其中的客户信息,生成可批量录入的客户列表。
@@ -7814,7 +7963,9 @@ async function _aiImportCustGetRawText(){
   if(activeTab.includes('Excel')){
     const file = document.getElementById('ai-imp-cust-xlsx-file')?.files?.[0];
     if(!file) throw new Error('请选择 Excel 文件');
-    return await _aiImportExtractXlsx(file);  // 复用任务模块函数
+    const text = await _aiImportExtractXlsx(file);  // 复用任务模块函数
+    _aiImportCustExcelMeta = _aiCheckCustExcelHeaders(text);  // v33.0.3.4:记录表头/行数,用于一致性提醒
+    return text;
   }
   if(activeTab.includes('Word')){
     const file = document.getElementById('ai-imp-cust-docx-file')?.files?.[0];
@@ -7990,6 +8141,7 @@ function openAIImportCustPreview(){
       <button class="modal-cls" onclick="closeAIImportCustPreview()">×</button>
     </div>
     <div class="modal-body ai-imp-bd">
+      ${_aiCustImportWarningHTML()}
       <div style="margin-bottom:12px;padding:8px 12px;background:#f0f9ff;border-left:3px solid #3b82f6;border-radius:6px;font-size:12px;color:#1e40af;line-height:1.6">
         💡 检查 AI 提取的客户条目,点 ☑ 切换是否导入,可逐条修改字段。无公司名或无电话的条目不会被导入(系统要求)。
       </div>
@@ -8019,24 +8171,24 @@ function _renderAIImpCustCard(c, idx){
     </div>
     <div class="ai-imp-card-grid">
       <div class="ai-imp-fg">
-        <label>联系人</label>
+        <label>联系人姓名</label>
         <input type="text" value="${h(c.contactName)}" oninput="updateAIImpCustField(${idx},'contactName',this.value)" placeholder="姓名">
       </div>
       <div class="ai-imp-fg">
-        <label>职位</label>
-        <input type="text" value="${h(c.contactTitle)}" oninput="updateAIImpCustField(${idx},'contactTitle',this.value)" placeholder="如 采购经理">
+        <label>联系人职位</label>
+        <input type="text" value="${h(c.contactTitle)}" oninput="updateAIImpCustField(${idx},'contactTitle',this.value)" placeholder="如：采购经理">
       </div>
       <div class="ai-imp-fg">
-        <label>电话 *</label>
+        <label>手机号码 *</label>
         <input type="text" value="${h(c.phone)}" oninput="updateAIImpCustField(${idx},'phone',this.value)" placeholder="必填">
       </div>
       <div class="ai-imp-fg">
-        <label>邮箱</label>
+        <label>邮箱地址</label>
         <input type="text" value="${h(c.email)}" oninput="updateAIImpCustField(${idx},'email',this.value)">
       </div>
       <div class="ai-imp-fg">
-        <label>城市</label>
-        <input type="text" value="${h(c.city)}" oninput="updateAIImpCustField(${idx},'city',this.value)" placeholder="如 北京">
+        <label>所在城市</label>
+        <input type="text" value="${h(c.city)}" oninput="updateAIImpCustField(${idx},'city',this.value)" placeholder="如：上海">
       </div>
       <div class="ai-imp-fg">
         <label>负责客户经理</label>
@@ -8049,19 +8201,19 @@ function _renderAIImpCustCard(c, idx){
         </select>
       </div>
       <div class="ai-imp-fg">
-        <label>级别</label>
+        <label>客户级别</label>
         <select onchange="updateAIImpCustField(${idx},'customerLevel',this.value)">
           ${LEVELS.map(v=>`<option value="${v}" ${c.customerLevel===v?'selected':''}>${v}</option>`).join('')}
         </select>
       </div>
       <div class="ai-imp-fg">
-        <label>状态</label>
+        <label>客户状态</label>
         <select onchange="updateAIImpCustField(${idx},'status',this.value)">
           ${STATUSES.map(v=>`<option value="${v}" ${c.status===v?'selected':''}>${v}</option>`).join('')}
         </select>
       </div>
       <div class="ai-imp-fg">
-        <label>来源</label>
+        <label>客户来源</label>
         <select onchange="updateAIImpCustField(${idx},'source',this.value)">
           ${SOURCES.map(v=>`<option value="${v}" ${c.source===v?'selected':''}>${v}</option>`).join('')}
         </select>
@@ -10338,8 +10490,8 @@ async function generateReport(){
   // 权限过滤数据
   let targetFU=DB.followups, targetC=DB.customers;
   if(!isAdmin()){
-    targetFU=DB.followups.filter(f=>f.createdBy===currentUser?.id);
-    targetC=DB.customers.filter(c=>c.createdBy===currentUser?.id);
+    targetFU=visibleFollowups();
+    targetC=visibleCustomers();
   }else if(repState.mgr){
     targetFU=DB.followups.filter(f=>f.createdBy===repState.mgr);
   }
@@ -11637,7 +11789,7 @@ let editingCustId=null;
 function openCustForm(id){
   editingCustId=id;
   const c=id?DB.customers.find(x=>x.id===id):null;
-  if(c&&!isAdmin()&&c.createdBy!==currentUser?.id){toast('无权编辑他人客户','err');return;}
+  if(c&&!canEditCustomer(c)){toast('无权编辑他人客户','err');return;}
   const v=(k,def='')=>h(c?c[k]??def:def);
   const sel=(k,def,opts)=>opts.map(o=>`<option value="${o}" ${(c?c[k]:def)===o?'selected':''}>${o}</option>`).join('');
   openModal(`${id?'✏️ 编辑客户':'➕ 新增客户'}`,`
@@ -11731,10 +11883,10 @@ function confirmDelCust(id){
 // ── 客户详情 ──
 function openCustDetail(id){
   const c=DB.customers.find(x=>x.id===id);if(!c)return;
-  if(!isAdmin()&&c.createdBy!==currentUser?.id){toast('无权查看','err');return;}
-  const cFU=DB.followups.filter(f=>f.customerId===id&&(isAdmin()||f.createdBy===currentUser?.id))
+  if(!canViewCustomer(c)){toast('无权查看','err');return;}
+  const cFU=DB.followups.filter(f=>f.customerId===id&&canViewFollowup(f))
     .sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
-  const canEdit=isAdmin()||c.createdBy===currentUser?.id;
+  const canEdit=canEditCustomer(c);
 
   // 工具栏按钮
   const toolBtns=`<div style="display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 14px">
