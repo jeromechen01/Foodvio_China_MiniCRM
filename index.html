@@ -3,13 +3,26 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0"/>
-<title>花花食界客户与任务管理系统 · v33.0 (3.3.6 Beta)</title>
+<title>花花食界客户与任务管理系统 · v33.0 (3.3.6.1 Beta)</title>
 <!-- v31.0.2: 移除 Google Fonts(国内访问超时),改用系统字体回退 -->
 <!-- QRCode.js -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <!--
   花花食界客户与任务管理系统 v33.0 (3.3 Beta) RELEASE
   北京花花食界食品科技有限公司 · 内部客户与任务管理系统
+  ══════════════════════════════════════════════════════════════════
+  v33.0.4.1 修复(2026-05-31):
+    问题1【群发短信 iOS 只进1个号码】:iOS Safari 对 sms: 多收件人
+      (逗号分隔)支持极不可靠,实测只取首个号码。改为:
+      · iOS → 逐个客户依次唤起(进度弹窗,发一个返回点下一个)
+      · 安卓及其它 → 维持批量(逗号分隔,每批≤20)
+    问题2【弹窗点外部误关闭】:openModal/openRaw 的蒙层点击改用
+      _bindBackdropGuard:要求 mousedown 与 mouseup 都落在蒙层本身才触发
+      (当前表单弹窗策略仍是点蒙层不关 = _safeCloseModal 空实现),
+      额外防止 iOS 触摸滚动/惯性滑动被误判为"点击蒙层"。
+      ⚠ 若线上仍出现误关,极可能是 GitHub Pages 缓存了旧版 HTML,
+        请强制刷新(或确认已上传本版文件覆盖)。
+
   ══════════════════════════════════════════════════════════════════
   v33.0.4 新功能(2026-05-30):客户批量编辑 — 群发短信(方案 A)
     入口:客户列表 → ☑ 批量编辑 → 选中客户 → 💬 群发短信
@@ -1465,7 +1478,7 @@ input[type=range].tsk-prog{width:100%;accent-color:#16a34a;cursor:pointer}
         <div class="sb-stat-r"><span class="sb-stat-l">待跟进预警</span><span class="sb-stat-v" id="sb-ov" style="color:#fca5a5">0</span></div>
       </div>
     </nav>
-    <div class="sb-foot">北京花花食界食品科技有限公司<br>© 2026 · 客户与任务管理系统 v33.0 (3.3.6 Beta)</div>
+    <div class="sb-foot">北京花花食界食品科技有限公司<br>© 2026 · 客户与任务管理系统 v33.0 (3.3.6.1 Beta)</div>
   </aside>
   <div id="main">
     <div id="topbar">
@@ -7776,7 +7789,7 @@ function bulkSendSMS(){
         <div id="sms-count" style="font-size:11px;color:var(--ms);margin-top:4px">0 字 · 约 1 条/人</div>
       </div>
       <div class="fg full" style="background:#f0fdf4;border-radius:7px;padding:9px;font-size:12px;color:#166534;line-height:1.7">
-        将向 <strong>${withPhone.length}</strong> 个有手机号的客户群发。点击"唤起短信群发"后,系统会打开您设备的短信应用并预填收件人与内容,<strong>需您在短信应用中手动点击发送</strong>。发送动作会记录到「客户管理 → 短信记录」。
+        将向 <strong>${withPhone.length}</strong> 个有手机号的客户群发。${_isIOSDevice()?'<strong>iPhone</strong> 因系统限制将<strong>逐个客户依次唤起</strong>(每发一个返回点下一个);':'点击"唤起短信群发"后,'}系统会打开短信应用并预填收件人与内容,<strong>需您在短信应用中手动点击发送</strong>。发送动作会记录到「客户管理 → 短信记录」。
       </div>
       ${noPhoneNote}
       ${deskNote}
@@ -7808,29 +7821,40 @@ function _updateSmsCount(){
   out.style.color = segs>1 ? '#b45309' : 'var(--ms)';
 }
 
-// 拼 sms: URI 并唤起(分批,每批 ≤ 20 个号码)
+// v33.0.4.1 — 拼 sms: URI 并唤起
+//   关键:iOS Safari 对 sms: 多收件人(逗号/分号分隔)支持极不可靠,
+//         实测常常只取到第 1 个号码(见用户反馈)。故 iOS 改为"逐个客户唤起",
+//         安卓仍可批量(逗号分隔多号码)。
+let _smsSendQueue = [];   // iOS 逐个发送时的剩余队列
+let _smsSendContent = ''; // 当前群发内容(逐个发送时复用)
+
+function _isIOSDevice(){ return /iPhone|iPad|iPod/i.test(navigator.userAgent||''); }
+
 function _doBulkSendSMS(){
   const content = document.getElementById('sms-content')?.value.trim()||'';
   if(!content){ toast('请输入短信内容','err'); return; }
   if(_smsSendTargets.length===0){ toast('无可发送客户','err'); return; }
 
+  // 先写一条群发记录(留痕"已发起群发",无论用户最终是否在短信 App 点发送)
+  saveSmsLogToDB(content, _smsSendTargets);
+
+  const enc = encodeURIComponent(content);
+
+  if(_isIOSDevice()){
+    // iOS:逐个客户唤起(多收件人不可靠)。用队列 + 进度弹窗。
+    _smsSendQueue = _smsSendTargets.slice();
+    _smsSendContent = content;
+    _renderIOSSmsProgress(true);  // true=首次打开
+    return;
+  }
+
+  // 安卓及其它:批量,逗号分隔,每批 ≤ 20
   const phones = _smsSendTargets.map(t=>t.phone);
   const BATCH = 20;
   const batches = [];
   for(let i=0;i<phones.length;i+=BATCH) batches.push(phones.slice(i,i+BATCH));
-
-  // iOS 用 &body,其它(Android 等)用 ?body;号码间用逗号
-  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent||'');
-  const sep = isIOS ? '&' : '?';
-  const enc = encodeURIComponent(content);
-
-  // 先写记录(无论用户最终是否在短信 App 点发送,都留痕"已发起群发")
-  saveSmsLogToDB(content, _smsSendTargets);
-
-  // 逐批唤起。多批时给出提示,避免用户以为只发了第一批
   batches.forEach((b,i)=>{
-    const uri = `sms:${b.join(',')}${sep}body=${enc}`;
-    // 第一批立即唤起,后续批次延时(部分系统连续唤起会被拦截)
+    const uri = `sms:${b.join(',')}?body=${enc}`;
     setTimeout(()=>{ window.location.href = uri; }, i*1200);
   });
 
@@ -7838,12 +7862,73 @@ function _doBulkSendSMS(){
   selectedCustIds.clear();
   _custBulkMode=false;
   if(curPage==='customers') refreshCustomers();
+  toast(batches.length>1
+    ? `已分 ${batches.length} 批唤起短信(每批最多 ${BATCH} 个),请在短信应用中逐批发送`
+    : '已唤起短信应用,请在其中点击发送','ok');
+}
 
-  if(batches.length>1){
-    toast(`已分 ${batches.length} 批唤起短信(每批最多 ${BATCH} 个号码),请在短信应用中逐批发送`,'info');
-  }else{
-    toast('已唤起短信应用,请在其中点击发送','ok');
+// iOS 逐个发送进度弹窗
+function _renderIOSSmsProgress(first){
+  const total = _smsSendTargets.length;
+  const remaining = _smsSendQueue.length;
+  const done = total - remaining;
+  const next = _smsSendQueue[0];
+
+  if(remaining===0){
+    // 全部完成
+    openModal('✅ 短信发送完成', `
+      <div style="text-align:center;padding:8px 4px">
+        <div style="font-size:40px;margin-bottom:10px">✅</div>
+        <div style="font-size:14px;color:var(--ink);font-weight:600;margin-bottom:6px">已逐个唤起 ${total} 个客户</div>
+        <div style="font-size:12px;color:var(--ms);line-height:1.6">请确认每条短信都已在短信应用中点击发送。<br>本次群发已记录到「客户管理 → 短信记录」。</div>
+      </div>
+    `, `<button class="btn btn-p" onclick="_finishIOSSms()">完成</button>`);
+    return;
   }
+
+  const nextName = next ? (next.companyName||next.phone) : '';
+  openModal(`💬 逐个发送(${done}/${total})`, `
+    <div class="form-grid">
+      <div class="fg full" style="background:#fffbeb;border-radius:7px;padding:9px;font-size:12px;color:#92400e;line-height:1.7">
+        ⚠ iPhone 的短信对"一次多个收件人"支持不稳定,因此改为<strong>逐个客户唤起</strong>。<br>
+        每点一次"唤起下一个",会打开短信并预填<strong>一个</strong>客户,您发送后用左上角"◀ Safari/返回"回到本页,再点下一个。
+      </div>
+      <div class="fg full" style="background:#f0fdf4;border-radius:7px;padding:11px;font-size:13px;color:#166534;text-align:center">
+        进度:<strong style="font-size:16px">${done} / ${total}</strong> 已唤起<br>
+        ${next?`下一个:<strong>${h(nextName)}</strong>（${h(next.phone)}）`:'全部完成'}
+      </div>
+    </div>
+  `, `
+    <button class="btn" onclick="_abortIOSSms()">中止</button>
+    <button class="btn btn-p" onclick="_sendNextIOSSms()">${done===0?'💬 唤起第一个':'💬 唤起下一个'}</button>
+  `);
+}
+
+function _sendNextIOSSms(){
+  const next = _smsSendQueue.shift();
+  if(!next){ _renderIOSSmsProgress(); return; }
+  const enc = encodeURIComponent(_smsSendContent);
+  // iOS 单收件人最稳:sms:号码&body=内容
+  window.location.href = `sms:${next.phone}&body=${enc}`;
+  // 唤起后,稍候重绘进度弹窗(用户从短信返回后即可见到"下一个")
+  setTimeout(()=>{ _renderIOSSmsProgress(); }, 600);
+}
+
+function _finishIOSSms(){
+  closeModal();
+  _smsSendQueue=[]; _smsSendContent='';
+  selectedCustIds.clear();
+  _custBulkMode=false;
+  if(curPage==='customers') refreshCustomers();
+}
+function _abortIOSSms(){
+  const done = _smsSendTargets.length - _smsSendQueue.length;
+  closeModal();
+  _smsSendQueue=[]; _smsSendContent='';
+  selectedCustIds.clear();
+  _custBulkMode=false;
+  if(curPage==='customers') refreshCustomers();
+  toast(`已中止,共唤起 ${done} 个客户`,'info');
 }
 
 // 桌面端兜底:复制号码 + 内容
@@ -12522,16 +12607,29 @@ function _safeCloseModal(){
   return;
 }
 
+// v33.0.4.1 — 蒙层防误关:即便将来改回"点蒙层关闭",也要求 mousedown 与 mouseup
+// 都发生在蒙层本身(而非弹窗内开始拖动滑出),避免 iOS 触摸滚动被误判为点击。
+// 当前策略:表单类弹窗点蒙层一律不关(_safeCloseModal 为空),此函数仅作额外护栏。
+function _bindBackdropGuard(overlay, closeFn){
+  let downOnBackdrop=false;
+  const onDown=e=>{ downOnBackdrop = (e.target===overlay); };
+  overlay.addEventListener('mousedown', onDown);
+  overlay.addEventListener('touchstart', onDown, {passive:true});
+  overlay.onclick=e=>{
+    if(e.target===overlay && downOnBackdrop){ closeFn(); }
+  };
+}
+
 function openModal(title,body,footer){
   const o=document.createElement('div');o.className='overlay';o.id='modal-ov';
-  o.onclick=e=>{if(e.target===o) _safeCloseModal();};  // v31:改为安全关闭
+  _bindBackdropGuard(o, _safeCloseModal);  // 表单弹窗:_safeCloseModal 为空 = 点蒙层不关
   o.innerHTML=`<div class="modal"><div class="modal-hdr"><span class="modal-ttl">${title}</span><button class="modal-cls" onclick="closeModal()">×</button></div><div class="modal-body">${body}</div><div class="modal-ft">${footer}</div></div>`;
   document.body.appendChild(o);
   _attachModalDirtyTracking(o.querySelector('.modal'));  // v31
 }
 function openRaw(html, maxWidth){
   const o=document.createElement('div');o.className='overlay';o.id='modal-ov';
-  o.onclick=e=>{if(e.target===o) _safeCloseModal();};  // v31
+  _bindBackdropGuard(o, _safeCloseModal);  // v31
   const d=document.createElement('div');d.className='modal';d.style.maxWidth=(maxWidth||680)+'px';
   d.innerHTML=html;o.appendChild(d);document.body.appendChild(o);
   _attachModalDirtyTracking(d);  // v31
